@@ -1,0 +1,35 @@
+{
+  "accuracy": 1.0,
+  "precision_weighted": 1.0,
+  "recall_weighted": 1.0,
+  "f1_weighted": 1.0,
+  "cv_mean": 1.0,
+  "cv_std": 0.0,
+  "cv_folds": 5,
+  "n_estimators": 100,
+  "criterion": "gini",
+  "train_samples": 252,
+  "test_samples": 108,
+  "confusion_matrix": [
+    [
+      36,
+      0,
+      0
+    ],
+    [
+      0,
+      36,
+      0
+    ],
+    [
+      0,
+      0,
+      36
+    ]
+  ],
+  "feature_importances": {
+    "vehicle_count": 0.3561,
+    "avg_wait_time": 0.3717,
+    "sensor_activation": 0.2722
+  }
+}
