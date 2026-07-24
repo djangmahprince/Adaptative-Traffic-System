@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Traffic Control — Live Dashboard</title>
+  <link rel="stylesheet" href="/src/client/style.css" />
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-icon">AI</div>
+    <div>
+      <h1>AI TRAFFIC CONTROL SYSTEM</h1>
+      <div class="subtitle">KNUST Computer Engineering — Live Control · 3D View</div>
+    </div>
+  </div>
+  <nav class="header-nav" aria-hidden="true">
+    <span class="active">Live Control</span>
+    <span>Network</span>
+    <span>Analytics</span>
+    <span>Reports</span>
+  </nav>
+  <div class="header-right">
+    <div class="clock">
+      <div class="time" id="header-time">--:--:--</div>
+      <div class="date" id="header-date">—</div>
+    </div>
+    <div class="connection-badge">
+      <div class="dot disconnected" id="conn-dot"></div>
+      <span id="conn-label">Disconnected</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="emergency-banner">
+    EMERGENCY VEHICLE DETECTED — Lane <span id="emg-lane">A</span> Priority Active
+  </div>
+
+  <div class="dashboard-grid">
+    <aside class="col-left">
+      <div class="card">
+        <div class="card-title">Live vehicle count</div>
+        <div class="lane-list" id="lane-list">
+          <div class="lane-row" id="sidebar-A">
+            <span class="dir">West (A)</span>
+            <span class="meta" id="sidebar-meta-A">Wait — · Low</span>
+            <span class="count" id="sidebar-count-A">—</span>
+            <div class="cong-bars" id="bars-A"><span></span><span></span><span></span></div>
+          </div>
+          <div class="lane-row" id="sidebar-B">
+            <span class="dir">North (B)</span>
+            <span class="meta" id="sidebar-meta-B">Wait — · Low</span>
+            <span class="count" id="sidebar-count-B">—</span>
+            <div class="cong-bars" id="bars-B"><span></span><span></span><span></span></div>
+          </div>
+          <div class="lane-row" id="sidebar-C">
+            <span class="dir">East (C)</span>
+            <span class="meta" id="sidebar-meta-C">Wait — · Low</span>
+            <span class="count" id="sidebar-count-C">—</span>
+            <div class="cong-bars" id="bars-C"><span></span><span></span><span></span></div>
+          </div>
+          <div class="lane-row" id="sidebar-D">
+            <span class="dir">South (D)</span>
+            <span class="meta" id="sidebar-meta-D">Wait — · Low</span>
+            <span class="count" id="sidebar-count-D">—</span>
+            <div class="cong-bars" id="bars-D"><span></span><span></span><span></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="card ai-panel">
+        <div class="card-title">AI status</div>
+        <div class="ai-status">
+          <div class="ai-brain" aria-hidden="true"></div>
+          <div>
+            <div class="ai-label">Congestion model</div>
+            <div class="ai-value" id="ai-status-text">OPTIMIZING</div>
+            <div class="ai-label" style="margin-top:4px" id="ai-dominant">—</div>
+          </div>
+        </div>
+        <div class="quick-metrics">
+          <div class="qm"><div class="v" id="qm-wait">—</div><div class="l">Avg wait</div></div>
+          <div class="qm"><div class="v" id="qm-cong">—</div><div class="l">Peak level</div></div>
+          <div class="qm"><div class="v" id="qm-update">—</div><div class="l">Updated</div></div>
+        </div>
+      </div>
+    </aside>
+
+    <section class="col-center">
+      <div class="scene-wrap">
+        <div id="scene-container"></div>
+        <div class="scene-hint">Drag to orbit · Scroll to zoom</div>
+        <div class="arm-overlay overlay-A" id="overlay-A">
+          <div class="arm-name">WEST</div>
+          <div class="arm-vehicles" id="overlay-vc-A">— vehicles</div>
+          <span class="arm-signal sig-red" id="overlay-sig-A">RED</span>
+        </div>
+        <div class="arm-overlay overlay-B" id="overlay-B">
+          <div class="arm-name">NORTH</div>
+          <div class="arm-vehicles" id="overlay-vc-B">— vehicles</div>
+          <span class="arm-signal sig-red" id="overlay-sig-B">RED</span>
+        </div>
+        <div class="arm-overlay overlay-C" id="overlay-C">
+          <div class="arm-name">EAST</div>
+          <div class="arm-vehicles" id="overlay-vc-C">— vehicles</div>
+          <span class="arm-signal sig-red" id="overlay-sig-C">RED</span>
+        </div>
+        <div class="arm-overlay overlay-D" id="overlay-D">
+          <div class="arm-name">SOUTH</div>
+          <div class="arm-vehicles" id="overlay-vc-D">— vehicles</div>
+          <span class="arm-signal sig-red" id="overlay-sig-D">RED</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="col-right">
+      <div class="card">
+        <div class="card-title">Traffic density</div>
+        <div class="density-legend"></div>
+        <div class="legend-labels"><span>Low</span><span>Moderate</span><span>High</span><span>Severe</span></div>
+      </div>
+      <div class="card phase-card" style="margin-top:12px">
+        <div class="phase-num" id="phase-num">Phase — of 2</div>
+        <div class="phase-name" id="phase-name">Waiting for data</div>
+        <div class="countdown-ring">
+          <svg width="100" height="100" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="8"/>
+            <circle id="countdown-arc" cx="50" cy="50" r="42" fill="none" stroke="#00c878" stroke-width="8"
+              stroke-dasharray="263.9" stroke-dashoffset="0" stroke-linecap="round"/>
+          </svg>
+          <div class="sec"><span id="countdown-sec">—<small>sec</small></span></div>
+        </div>
+        <div class="next-phase">
+          Next phase
+          <strong id="next-phase-text">—</strong>
+        </div>
+      </div>
+      <div class="card" style="margin-top:12px">
+        <div class="card-title">Today summary</div>
+        <table class="summary-table">
+          <tr><td>Total vehicles</td><td id="sum-total">—</td></tr>
+          <tr><td>Signal cycles</td><td id="sum-cycles">—</td></tr>
+          <tr><td>Avg wait time</td><td id="sum-wait">—</td></tr>
+          <tr><td>Incidents</td><td id="sum-incidents">0</td></tr>
+        </table>
+      </div>
+    </aside>
+  </div>
+
+  <div class="footer-section">
+    <div class="card timeline-wrap">
+      <div class="card-title">Signal cycle timeline</div>
+      <div class="timeline-bar" id="timeline-bar">
+        <div class="timeline-seg seg-green" id="tl-h" style="flex:1">West &amp; East</div>
+        <div class="timeline-seg seg-amber" aria-hidden="true"></div>
+        <div class="timeline-seg seg-red" id="tl-v" style="flex:1">North &amp; South</div>
+      </div>
+      <div class="timeline-meta">
+        <span>Cycle segments scale with last green times</span>
+        <span>Cycle time: <strong id="cycle-time">—</strong></span>
+      </div>
+    </div>
+    <div class="bottom-row">
+      <div class="card panel">
+        <h2>Congestion history (last 30 cycles)</h2>
+        <div class="chart-wrap">
+          <canvas id="historyChart"></canvas>
+        </div>
+      </div>
+      <div class="card panel">
+        <h2>Decision log</h2>
+        <div id="event-log">
+          <div class="event-item">
+            <span class="event-time">--:--:--</span>
+            <span class="event-msg">Waiting for ESP32 connection...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>AI-Based Intelligent Traffic Congestion Prediction &amp; Control System &nbsp;|&nbsp; KNUST Computer Engineering &nbsp;|&nbsp; Supervisor: Prof. Emmanuel K. Akowuah</footer>
+
+<script type="module" src="/src/client/main.ts"></script>
+</body>
+</html>

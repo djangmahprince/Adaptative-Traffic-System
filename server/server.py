@@ -27,6 +27,7 @@ import time
 import os
 import logging
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 ML_DIR     = os.path.join(BASE_DIR, '..', 'ml')
@@ -34,6 +35,12 @@ MODEL_PATH = os.path.join(ML_DIR, 'traffic_model.pkl')
 
 HOST = '0.0.0.0'
 PORT = 5050
+
+# Internal state bridge — read-only JSON feed consumed by the Node/TS
+# dashboard (dashboard/). Bound to localhost only; it is not the public
+# web server.
+BRIDGE_HOST = '127.0.0.1'
+BRIDGE_PORT = 5051
 
 # Green time per congestion level (seconds)
 GREEN_TIME = {0: 10, 1: 20, 2: 35}
@@ -299,6 +306,47 @@ def start_tcp_server(model):
     server_sock.close()
 
 
+class StateBridgeHandler(BaseHTTPRequestHandler):
+    """Serves shared_state as JSON for the Node/TS dashboard to poll."""
+
+    def log_message(self, format, *args):
+        pass  # the TCP server's own logging is the source of truth
+
+    def do_GET(self):
+        if self.path != '/api/state':
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        with state_lock:
+            payload = {
+                'lanes': {k: dict(v) for k, v in shared_state['lanes'].items()},
+                'current_phase':    shared_state['current_phase'],
+                'phase_green_time': shared_state['phase_green_time'],
+                'emergency':        shared_state['emergency'],
+                'emergency_lane':   shared_state['emergency_lane'],
+                'cycle_count':      shared_state['cycle_count'],
+                'total_vehicles':   shared_state['total_vehicles'],
+                'connected':        shared_state['connected'],
+                'last_update':      shared_state['last_update'],
+                'events':           shared_state['events'][:10],
+            }
+
+        body = json.dumps(payload).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def start_state_bridge():
+    httpd = ThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), StateBridgeHandler)
+    log.info(f"  State bridge     : http://{BRIDGE_HOST}:{BRIDGE_PORT}/api/state (internal)")
+    httpd.serve_forever()
+
+
 if __name__ == '__main__':
     model = load_model()
+    threading.Thread(target=start_state_bridge, daemon=True).start()
     start_tcp_server(model)
