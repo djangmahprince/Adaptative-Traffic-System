@@ -77,7 +77,7 @@ def make_packet(scenario, cycle, timestamp):
     if scenario.get('emergency_on_cycle') == cycle:
         emg = 'DE:AD:BE:EF'
 
-    pkt = {'timestamp': timestamp, 'emergency': emg}
+    pkt = {'timestamp': timestamp, 'emergency': emg, 'source': 'simulator'}
     for lane in ['A', 'B', 'C', 'D']:
         cfg   = scenario['lanes'][lane]
         count = random.randint(*cfg['count'])

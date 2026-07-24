@@ -15,7 +15,9 @@
 #  two active lanes, so the busier road gets enough time.
 #  Amber = 3 seconds between every phase transition.
 #
-#  Emergency override: all RED except emergency lane GREEN.
+#  Emergency override: all RED except emergency lane GREEN,
+#  triggered either by the RC522 RFID reader on Lane A (real
+#  hardware) or by a manual dashboard override (for demos).
 # ============================================================
 
 import socket
@@ -28,17 +30,21 @@ import os
 import logging
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-ML_DIR     = os.path.join(BASE_DIR, '..', 'ml')
-MODEL_PATH = os.path.join(ML_DIR, 'traffic_model.pkl')
+import history
+
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+ML_DIR      = os.path.join(BASE_DIR, '..', 'ml')
+MODEL_PATH  = os.path.join(ML_DIR, 'traffic_model.pkl')
+METRICS_PATH = os.path.join(ML_DIR, 'model_metrics.json')
 
 HOST = '0.0.0.0'
 PORT = 5050
 
-# Internal state bridge — read-only JSON feed consumed by the Node/TS
-# dashboard (dashboard/). Bound to localhost only; it is not the public
-# web server.
+# Internal state bridge — read-only JSON feed (plus the manual-override
+# control endpoint) consumed by the Node/TS dashboard (dashboard/).
+# Bound to localhost only; it is not the public web server.
 BRIDGE_HOST = '127.0.0.1'
 BRIDGE_PORT = 5051
 
@@ -66,7 +72,7 @@ logging.basicConfig(
 )
 log = logging.getLogger('TrafficServer')
 
-# ── Shared state (read by Flask dashboard) ────────────────────
+# ── Shared state (read by the Node/TS dashboard) ──────────────
 shared_state = {
     'lanes': {
         lane: {
@@ -75,6 +81,7 @@ shared_state = {
             'sensor_activation': 0,
             'congestion_level':  0,
             'congestion_label':  'Low',
+            'confidence':        0,
             'green_time':        GREEN_TIME[0],
             'signal':            'RED',
         }
@@ -85,13 +92,20 @@ shared_state = {
     'emergency':        False,
     'emergency_lane':   None,
     'last_emergency':   0,
+    'manual_override':  None,    # {'type': 'emergency'|'congestion', 'lane', 'level', 'set_at'}
     'cycle_count':      0,
     'total_vehicles':   0,
     'events':           [],
     'connected':        False,
+    'source':           None,    # 'simulator' | 'device', from the last packet
     'last_update':      None,
 }
 state_lock = threading.Lock()
+
+# Set once at startup / on each packet so a manual override can be applied
+# immediately without waiting for the next sensor reading.
+_model = None
+_last_packet = None
 
 
 def load_model():
@@ -107,18 +121,51 @@ def load_model():
 
 def predict_congestion(model, vehicle_count, avg_wait_time, sensor_activation):
     features = np.array([[vehicle_count, avg_wait_time, sensor_activation]])
-    pred = int(model.predict(features)[0])
-    return pred, LABEL_NAME[pred]
+    proba = model.predict_proba(features)[0]
+    pred = int(np.argmax(proba))
+    confidence = float(proba[pred])
+    return pred, LABEL_NAME[pred], confidence
 
 
-def add_event(message):
-    ts = datetime.now().strftime('%H:%M:%S')
+def add_event(message, category='decision'):
+    ts = history.record_event(message, category=category)
     with state_lock:
-        shared_state['events'].insert(0, {'time': ts, 'msg': message})
+        shared_state['events'].insert(0, {'time': ts, 'msg': message, 'category': category})
         shared_state['events'] = shared_state['events'][:50]
 
 
-def compute_timing(model, packet):
+def apply_manual_override(action, lane=None, level=None):
+    """Called from the dashboard's POST /api/override. Applies immediately
+    against the last known sensor reading so the effect is visible without
+    waiting for the next packet."""
+    if action == 'reset':
+        with state_lock:
+            shared_state['manual_override'] = None
+        add_event('Manual override cleared — AI resumed normal control', category='override')
+    elif action == 'emergency':
+        with state_lock:
+            shared_state['manual_override'] = {
+                'type': 'emergency', 'lane': lane, 'level': None, 'set_at': time.time(),
+            }
+        add_event(f'Manual override — emergency priority forced for Lane {lane}', category='override')
+    elif action == 'congestion':
+        with state_lock:
+            shared_state['manual_override'] = {
+                'type': 'congestion', 'lane': lane, 'level': level, 'set_at': time.time(),
+            }
+        add_event(
+            f'Manual override — forced {LABEL_NAME[level]} congestion on Lane {lane}',
+            category='override',
+        )
+    else:
+        return False
+
+    if _model is not None and _last_packet is not None:
+        compute_timing(_model, _last_packet, record=False)
+    return True
+
+
+def compute_timing(model, packet, record=True):
     """
     Compute per-lane congestion predictions and determine
     which phase runs next and for how long.
@@ -126,21 +173,45 @@ def compute_timing(model, packet):
     Phase selection rotates A+C → B+D → A+C → ...
     Green duration = GREEN_TIME of the HIGHEST congestion
     lane in the active phase (so busier road gets more time).
+
+    `record` is False when this is an immediate refresh triggered by a
+    manual override rather than a genuine new sensor reading — in that
+    case cycle/vehicle counters and history rows are not touched.
     """
     now = time.time()
     emergency_active = False
     emergency_lane   = None
 
-    # ── Check emergency ───────────────────────────────────────
-    if packet.get('emergency', 0) not in [0, '0', '']:
+    with state_lock:
+        override = shared_state.get('manual_override')
+
+    # ── Manual emergency override expiry ──────────────────────
+    if override and override['type'] == 'emergency' and now - override['set_at'] > EMERGENCY_HOLD_SECS:
+        with state_lock:
+            shared_state['manual_override'] = None
+        add_event(
+            f"Emergency cleared — Lane {override['lane']} resuming normal AI control",
+            category='emergency',
+        )
+        override = None
+
+    # ── Determine emergency state (manual override takes priority) ────
+    if override and override['type'] == 'emergency':
+        emergency_active = True
+        emergency_lane   = override['lane']
+        with state_lock:
+            shared_state['emergency']      = True
+            shared_state['emergency_lane'] = emergency_lane
+    elif packet.get('emergency', 0) not in [0, '0', '']:
         last_emg = shared_state.get('last_emergency', 0)
         if now - last_emg >= EMERGENCY_COOLDOWN_SECS:
             emergency_active = True
             emergency_lane   = 'A'
             log.warning("EMERGENCY OVERRIDE — Lane A priority")
             add_event(
-                f"Emergency vehicle detected — "
-                f"Lane A priority for {EMERGENCY_HOLD_SECS}s"
+                f"RFID tag detected — emergency priority active for "
+                f"Lane A ({EMERGENCY_HOLD_SECS}s)",
+                category='emergency',
             )
             with state_lock:
                 shared_state['last_emergency'] = now
@@ -153,8 +224,15 @@ def compute_timing(model, packet):
         vc = float(packet.get(f'lane{lane}_count', 0))
         wt = float(packet.get(f'lane{lane}_wait',  0))
         sa = float(packet.get(f'lane{lane}_activation', vc * 0.5))
-        level, label = predict_congestion(model, vc, wt, sa)
-        lane_levels[lane] = (level, label, vc, wt, sa)
+
+        if override and override['type'] == 'congestion' and override['lane'] == lane:
+            level, label, confidence = override['level'], LABEL_NAME[override['level']], 1.0
+        else:
+            level, label, confidence = predict_congestion(model, vc, wt, sa)
+
+        lane_levels[lane] = {
+            'level': level, 'label': label, 'vc': vc, 'wt': wt, 'sa': sa, 'confidence': confidence,
+        }
 
     # ── Determine next phase ──────────────────────────────────
     with state_lock:
@@ -163,13 +241,13 @@ def compute_timing(model, packet):
     active_lanes = PHASES[next_phase]
 
     # Green duration = highest congestion in the active pair
-    max_level = max(lane_levels[l][0] for l in active_lanes)
+    max_level = max(lane_levels[l]['level'] for l in active_lanes)
     phase_green = GREEN_TIME[max_level]
 
     # ── Build per-lane signal states ──────────────────────────
     timing = {}
     for lane in LANES:
-        level, label, vc, wt, sa = lane_levels[lane]
+        info = lane_levels[lane]
 
         if emergency_active:
             signal     = 'GREEN' if lane == emergency_lane else 'RED'
@@ -182,8 +260,8 @@ def compute_timing(model, packet):
         timing[lane] = {
             'green_time':        green_time,
             'amber_time':        AMBER_TIME,
-            'congestion_level':  level,
-            'congestion_label':  label,
+            'congestion_level':  info['level'],
+            'congestion_label':  info['label'],
             'signal':            signal,
             'emergency_override': emergency_active and lane == emergency_lane,
         }
@@ -191,16 +269,17 @@ def compute_timing(model, packet):
         # Update shared state for dashboard
         with state_lock:
             shared_state['lanes'][lane].update({
-                'vehicle_count':     int(vc),
-                'avg_wait_time':     round(wt, 1),
-                'sensor_activation': round(sa, 2),
-                'congestion_level':  level,
-                'congestion_label':  label,
+                'vehicle_count':     int(info['vc']),
+                'avg_wait_time':     round(info['wt'], 1),
+                'sensor_activation': round(info['sa'], 2),
+                'congestion_level':  info['level'],
+                'congestion_label':  info['label'],
+                'confidence':        round(info['confidence'], 3),
                 'green_time':        green_time,
                 'signal':            signal,
             })
 
-    # ── Clear emergency after one cycle ───────────────────────
+    # ── Clear emergency after one cycle (unless still overridden) ─────
     if not emergency_active:
         with state_lock:
             shared_state['emergency']      = False
@@ -210,29 +289,63 @@ def compute_timing(model, packet):
     with state_lock:
         shared_state['current_phase']    = next_phase
         shared_state['phase_green_time'] = phase_green
-        shared_state['cycle_count']     += 1
-        shared_state['total_vehicles']  += sum(
-            int(packet.get(f'lane{l}_count', 0)) for l in LANES
-        )
+        if record:
+            shared_state['cycle_count']    += 1
+            shared_state['total_vehicles'] += sum(
+                int(packet.get(f'lane{l}_count', 0)) for l in LANES
+            )
+        shared_state['source']      = packet.get('source', 'device')
         shared_state['last_update'] = datetime.now().strftime('%H:%M:%S')
-        shared_state['connected']   = True
+        cycle_count    = shared_state['cycle_count']
+        total_vehicles = shared_state['total_vehicles']
+
+    # Stop the clock here — everything after this is logging/persistence,
+    # not part of the prediction + phase-decision work being measured.
+    latency_ms = round((time.time() - now) * 1000, 2)
 
     phase_name = "A+C (Horizontal)" if next_phase == 0 else "B+D (Vertical)"
     log.info(
         f"Phase {next_phase} [{phase_name}] — "
         f"Green {phase_green}s | "
-        f"A:{lane_levels['A'][1]} "
-        f"B:{lane_levels['B'][1]} "
-        f"C:{lane_levels['C'][1]} "
-        f"D:{lane_levels['D'][1]}"
+        f"A:{lane_levels['A']['label']} "
+        f"B:{lane_levels['B']['label']} "
+        f"C:{lane_levels['C']['label']} "
+        f"D:{lane_levels['D']['label']}"
     )
+
+    if record:
+        controlling_lane = max(active_lanes, key=lambda l: lane_levels[l]['level'])
+        conf_pct = round(lane_levels[controlling_lane]['confidence'] * 100)
+        add_event(
+            f"Lane {controlling_lane} given {phase_green}s green — "
+            f"{lane_levels[controlling_lane]['label']} congestion (confidence {conf_pct}%)"
+        )
+        history.record_cycle({
+            'phase': next_phase,
+            'emergency': emergency_active,
+            'emergency_lane': emergency_lane,
+            'total_vehicles': total_vehicles,
+            'cycle_count': cycle_count,
+            'latency_ms': latency_ms,
+            **{
+                lane: (
+                    int(lane_levels[lane]['vc']), round(lane_levels[lane]['wt'], 1),
+                    lane_levels[lane]['level'], round(lane_levels[lane]['confidence'], 3),
+                    timing[lane]['signal'],
+                )
+                for lane in LANES
+            },
+        })
 
     return timing
 
 
 def handle_client(conn, addr, model):
+    global _last_packet
     log.info(f"ESP32 connected from {addr}")
-    add_event(f"ESP32 connected from {addr[0]}")
+    add_event(f"ESP32 connected from {addr[0]}", category='connection')
+    with state_lock:
+        shared_state['connected'] = True
     buffer = ''
     try:
         while True:
@@ -251,6 +364,7 @@ def handle_client(conn, addr, model):
                     log.warning(f"Bad JSON: {e}")
                     continue
 
+                _last_packet = packet
                 timing = compute_timing(model, packet)
 
                 response = {
@@ -280,10 +394,12 @@ def handle_client(conn, addr, model):
         with state_lock:
             shared_state['connected'] = False
         log.info(f"Connection from {addr} closed")
-        add_event(f"ESP32 disconnected from {addr[0]}")
+        add_event(f"ESP32 disconnected from {addr[0]}", category='connection')
 
 
 def start_tcp_server(model):
+    global _model
+    _model = model
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((HOST, PORT))
@@ -307,40 +423,110 @@ def start_tcp_server(model):
 
 
 class StateBridgeHandler(BaseHTTPRequestHandler):
-    """Serves shared_state as JSON for the Node/TS dashboard to poll."""
+    """Serves shared_state + history as JSON for the Node/TS dashboard,
+    and accepts manual-override commands from it."""
 
     def log_message(self, format, *args):
         pass  # the TCP server's own logging is the source of truth
 
-    def do_GET(self):
-        if self.path != '/api/state':
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        with state_lock:
-            payload = {
-                'lanes': {k: dict(v) for k, v in shared_state['lanes'].items()},
-                'current_phase':    shared_state['current_phase'],
-                'phase_green_time': shared_state['phase_green_time'],
-                'emergency':        shared_state['emergency'],
-                'emergency_lane':   shared_state['emergency_lane'],
-                'cycle_count':      shared_state['cycle_count'],
-                'total_vehicles':   shared_state['total_vehicles'],
-                'connected':        shared_state['connected'],
-                'last_update':      shared_state['last_update'],
-                'events':           shared_state['events'][:10],
-            }
-
+    def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode('utf-8')
-        self.send_response(200)
+        self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+
+        if parsed.path == '/api/state':
+            with state_lock:
+                payload = {
+                    'lanes': {k: dict(v) for k, v in shared_state['lanes'].items()},
+                    'current_phase':    shared_state['current_phase'],
+                    'phase_green_time': shared_state['phase_green_time'],
+                    'emergency':        shared_state['emergency'],
+                    'emergency_lane':   shared_state['emergency_lane'],
+                    'manual_override':  shared_state['manual_override'],
+                    'cycle_count':      shared_state['cycle_count'],
+                    'total_vehicles':   shared_state['total_vehicles'],
+                    'connected':        shared_state['connected'],
+                    'source':           shared_state['source'],
+                    'last_update':      shared_state['last_update'],
+                    'events':           shared_state['events'][:10],
+                }
+            self._send_json(payload)
+
+        elif parsed.path == '/api/history':
+            limit = int(query.get('limit', ['200'])[0])
+            self._send_json({'cycles': history.get_recent_cycles(limit)})
+
+        elif parsed.path == '/api/events':
+            category = query.get('category', [None])[0]
+            limit = int(query.get('limit', ['50'])[0])
+            self._send_json({'events': history.get_events(category, limit)})
+
+        elif parsed.path == '/api/network':
+            with state_lock:
+                connected = shared_state['connected']
+                source = shared_state['source']
+                last_update = shared_state['last_update']
+            self._send_json({
+                'connected': connected,
+                'source': source,
+                'last_update': last_update,
+                **history.get_network_stats(),
+            })
+
+        elif parsed.path == '/api/reports/summary':
+            range_ = query.get('range', ['today'])[0]
+            self._send_json(history.get_report_summary(range_))
+
+        elif parsed.path == '/api/model':
+            try:
+                with open(METRICS_PATH) as f:
+                    self._send_json(json.load(f))
+            except FileNotFoundError:
+                self._send_json({'error': 'model_metrics.json not found'}, status=404)
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path != '/api/override':
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        length = int(self.headers.get('Content-Length', 0))
+        try:
+            body = json.loads(self.rfile.read(length) or b'{}')
+        except json.JSONDecodeError:
+            self._send_json({'error': 'invalid JSON body'}, status=400)
+            return
+
+        action = body.get('action')
+        lane = body.get('lane')
+        level = body.get('level')
+        if action in ('emergency', 'congestion') and lane not in LANES:
+            self._send_json({'error': 'lane must be one of A/B/C/D'}, status=400)
+            return
+        if action == 'congestion' and level not in (0, 1, 2):
+            self._send_json({'error': 'level must be 0, 1 or 2'}, status=400)
+            return
+
+        ok = apply_manual_override(action, lane=lane, level=level)
+        if not ok:
+            self._send_json({'error': 'unknown action'}, status=400)
+            return
+        self._send_json({'ok': True})
+
 
 def start_state_bridge():
+    history.init_db()
     httpd = ThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), StateBridgeHandler)
     log.info(f"  State bridge     : http://{BRIDGE_HOST}:{BRIDGE_PORT}/api/state (internal)")
     httpd.serve_forever()

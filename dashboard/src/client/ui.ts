@@ -1,5 +1,6 @@
 import { Chart } from 'chart.js/auto';
 import { LANES, type Lane, type BridgeState, type DashboardPayload } from '../shared/types.js';
+import { byId } from './dom.js';
 
 const PHASE_H: Lane[] = ['A', 'C'];
 const PHASE_V: Lane[] = ['B', 'D'];
@@ -13,12 +14,6 @@ interface PhaseInfo {
   label: string;
   activeLanes: Lane[];
   nextLabel: string;
-}
-
-function byId<T extends HTMLElement>(id: string): T {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`missing #${id}`);
-  return el as T;
 }
 
 function derivePhase(lanes: BridgeState['lanes'], emergency: boolean, emergencyLane: Lane | null): PhaseInfo {
@@ -61,6 +56,8 @@ export class DashboardUI {
   private phaseDurationSec = 10;
   private lastGreenH = 10;
   private lastGreenV = 10;
+  private lastTotalVehicles: number | null = null;
+  private lastVehiclesAt = 0;
 
   constructor() {
     this.updateHeaderClock();
@@ -112,20 +109,34 @@ export class DashboardUI {
   }
 
   setConnectionState(connected: boolean, bridgeReachable: boolean): void {
-    const dot = byId('conn-dot');
-    const label = byId('conn-label');
-    if (connected) {
-      dot.className = 'dot connected';
-      label.textContent = 'ESP32 Connected';
+    const badge = byId('badge-connection');
+    const text = byId('badge-connection-text');
+    badge.classList.toggle('connected', connected);
+    text.textContent = connected
+      ? 'ESP32 CONNECTED'
+      : bridgeReachable
+        ? 'WAITING FOR ESP32'
+        : 'SERVER UNREACHABLE';
+  }
+
+  setModeBadge(source: BridgeState['source']): void {
+    const badge = byId('badge-mode');
+    if (source === 'simulator') {
+      badge.textContent = 'SIMULATION MODE';
+      badge.classList.remove('live');
+    } else if (source === 'device') {
+      badge.textContent = 'LIVE HARDWARE';
+      badge.classList.add('live');
     } else {
-      dot.className = 'dot disconnected';
-      label.textContent = bridgeReachable ? 'Waiting for ESP32...' : 'Dashboard server unreachable';
+      badge.textContent = 'NO SIGNAL';
+      badge.classList.remove('live');
     }
   }
 
   apply(payload: DashboardPayload): void {
     const { state, metrics, bridgeReachable } = payload;
     this.setConnectionState(state.connected, bridgeReachable);
+    this.setModeBadge(state.source);
 
     const banner = byId('emergency-banner');
     if (state.emergency && state.emergency_lane) {
@@ -138,6 +149,7 @@ export class DashboardUI {
     LANES.forEach((lane) => this.applyLaneData(lane, state.lanes[lane], state.emergency_lane));
     this.updateOverlays(state.lanes);
     this.updatePhasePanel(state, metrics);
+    this.updateDecisionStatus(state);
     this.updateTimeline(state);
     this.updateEvents(state.events);
     this.updateChart();
@@ -219,21 +231,37 @@ export class DashboardUI {
     byId('sum-cycles').textContent = String(state.cycle_count ?? '—');
     byId('sum-wait').textContent = metrics.avg_wait_time != null ? `${metrics.avg_wait_time}s` : '—';
     byId('sum-incidents').textContent = state.emergency ? '1 (active)' : '0';
+  }
 
-    byId('qm-wait').textContent = String(metrics.avg_wait_time ?? '—');
-    byId('qm-update').textContent = state.last_update ?? '—';
+  private updateDecisionStatus(state: BridgeState): void {
+    const lanes = state.lanes;
+    const latestDecision = state.events.find((e) => e.category === 'decision' || !e.category);
+    byId('ai-decision-msg').textContent = latestDecision?.msg ?? 'Waiting for first decision…';
 
-    let peak = 0;
-    let peakLabel = 'Low';
+    let peak: Lane = 'A';
     LANES.forEach((l) => {
-      const lv = lanes[l]?.congestion_level ?? 0;
-      if (lv >= peak) {
-        peak = lv;
-        peakLabel = lanes[l]?.congestion_label ?? 'Low';
-      }
+      if (lanes[l].congestion_level >= lanes[peak].congestion_level) peak = l;
     });
-    byId('qm-cong').textContent = peakLabel;
-    byId('ai-dominant').textContent = `Peak: ${peakLabel} across lanes`;
+    byId('qm-confidence').textContent = `${Math.round((lanes[peak].confidence ?? 0) * 100)}%`;
+
+    // Only recompute on an actual change in the vehicle counter — most WS
+    // ticks land between sensor packets with zero delta, and dividing by
+    // the resulting sub-second dt would make this number spike wildly.
+    const now = Date.now();
+    if (this.lastTotalVehicles != null) {
+      const dv = state.total_vehicles - this.lastTotalVehicles;
+      if (dv > 0) {
+        const dt = (now - this.lastVehiclesAt) / 1000;
+        const perMin = dt > 0 ? Math.max(0, Math.round((dv / dt) * 60)) : 0;
+        byId('qm-throughput').textContent = String(perMin);
+        this.lastVehiclesAt = now;
+      }
+    } else {
+      this.lastVehiclesAt = now;
+    }
+    this.lastTotalVehicles = state.total_vehicles;
+
+    byId('qm-emergency').textContent = state.emergency ? 'YES' : 'NO';
   }
 
   private updateTimeline(state: BridgeState): void {

@@ -10,33 +10,62 @@
 
 <header>
   <div class="brand">
-    <div class="brand-icon">AI</div>
     <div>
       <h1>AI TRAFFIC CONTROL SYSTEM</h1>
-      <div class="subtitle">KNUST Computer Engineering — Live Control · 3D View</div>
+      <div class="subtitle">KNUST Department of Computer Engineering · Real-time intersection simulation</div>
     </div>
   </div>
-  <nav class="header-nav" aria-hidden="true">
-    <span class="active">Live Control</span>
-    <span>Network</span>
-    <span>Analytics</span>
-    <span>Reports</span>
+  <nav class="header-nav">
+    <a href="#/live" data-page="live" class="active">Live Control</a>
+    <a href="#/network" data-page="network">Network</a>
+    <a href="#/analytics" data-page="analytics">Analytics</a>
+    <a href="#/reports" data-page="reports">Reports</a>
   </nav>
   <div class="header-right">
+    <div class="status-badges">
+      <span class="badge" id="badge-connection">
+        <span class="badge-dot"></span><span id="badge-connection-text">Disconnected</span>
+      </span>
+      <span class="badge badge-info">AI MODEL ACTIVE</span>
+      <span class="badge badge-mode" id="badge-mode">—</span>
+    </div>
     <div class="clock">
       <div class="time" id="header-time">--:--:--</div>
       <div class="date" id="header-date">—</div>
-    </div>
-    <div class="connection-badge">
-      <div class="dot disconnected" id="conn-dot"></div>
-      <span id="conn-label">Disconnected</span>
     </div>
   </div>
 </header>
 
 <main>
+
+<section class="page" data-page="live">
   <div id="emergency-banner">
     EMERGENCY VEHICLE DETECTED — Lane <span id="emg-lane">A</span> Priority Active
+  </div>
+
+  <div class="card override-bar">
+    <div class="override-label">Manual Override</div>
+    <label class="override-field">
+      <span>Lane</span>
+      <select id="override-lane">
+        <option value="A">Lane A — West</option>
+        <option value="B">Lane B — North</option>
+        <option value="C">Lane C — East</option>
+        <option value="D">Lane D — South</option>
+      </select>
+    </label>
+    <label class="override-field">
+      <span>Level</span>
+      <select id="override-level">
+        <option value="0">Low</option>
+        <option value="1" selected>Medium</option>
+        <option value="2">High</option>
+      </select>
+    </label>
+    <button class="btn btn-danger" id="btn-emergency">Trigger Emergency</button>
+    <button class="btn btn-warning" id="btn-congestion">Force Congestion</button>
+    <button class="btn btn-ghost" id="btn-reset">Reset</button>
+    <span class="override-status" id="override-status"></span>
   </div>
 
   <div class="dashboard-grid">
@@ -71,19 +100,19 @@
         </div>
       </div>
       <div class="card ai-panel">
-        <div class="card-title">AI status</div>
+        <div class="card-title">AI decision status</div>
         <div class="ai-status">
           <div class="ai-brain" aria-hidden="true"></div>
           <div>
             <div class="ai-label">Congestion model</div>
             <div class="ai-value" id="ai-status-text">OPTIMIZING</div>
-            <div class="ai-label" style="margin-top:4px" id="ai-dominant">—</div>
           </div>
         </div>
+        <div class="ai-decision-msg" id="ai-decision-msg">Waiting for first decision…</div>
         <div class="quick-metrics">
-          <div class="qm"><div class="v" id="qm-wait">—</div><div class="l">Avg wait</div></div>
-          <div class="qm"><div class="v" id="qm-cong">—</div><div class="l">Peak level</div></div>
-          <div class="qm"><div class="v" id="qm-update">—</div><div class="l">Updated</div></div>
+          <div class="qm"><div class="v" id="qm-confidence">—</div><div class="l">Confidence</div></div>
+          <div class="qm"><div class="v" id="qm-throughput">—</div><div class="l">Throughput/min</div></div>
+          <div class="qm"><div class="v" id="qm-emergency">NO</div><div class="l">Emergency</div></div>
         </div>
       </div>
     </aside>
@@ -180,9 +209,114 @@
       </div>
     </div>
   </div>
+</section>
+
+<section class="page" data-page="network" hidden>
+  <div class="page-grid">
+    <div class="card">
+      <div class="card-title">Connection status</div>
+      <div class="network-hero">
+        <div class="dot-lg" id="net-dot"></div>
+        <div>
+          <div class="network-state" id="net-state">Disconnected</div>
+          <div class="network-sub" id="net-source">—</div>
+        </div>
+      </div>
+      <table class="summary-table">
+        <tr><td>Last update</td><td id="net-last-update">—</td></tr>
+        <tr><td>Successful connections</td><td id="net-connect-count">—</td></tr>
+        <tr><td>Disconnections</td><td id="net-disconnect-count">—</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title">What this means</div>
+      <p class="hint-text">
+        The ESP32 (or the simulator standing in for it) connects to the Python server over a
+        TCP socket and sends a sensor reading every 2 seconds. If the connection drops, the
+        dashboard keeps showing the last known state until it reconnects.
+      </p>
+    </div>
+    <div class="card span-2">
+      <div class="card-title">Connection history</div>
+      <div id="network-log" class="scroll-log">
+        <div class="event-item"><span class="event-msg">No connection events yet.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="page" data-page="analytics" hidden>
+  <div class="page-grid">
+    <div class="card">
+      <div class="card-title">Traffic density over time</div>
+      <div class="chart-wrap"><canvas id="chart-density"></canvas></div>
+      <div class="hint-text">Congestion level per lane, most recent cycles</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Queue length over time</div>
+      <div class="chart-wrap"><canvas id="chart-queue"></canvas></div>
+      <div class="hint-text">Vehicles waiting per lane, most recent cycles</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Congestion trend</div>
+      <div class="chart-wrap chart-wrap-sm"><canvas id="chart-trend"></canvas></div>
+      <div class="hint-text">Average congestion level across all lanes</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Vehicle throughput</div>
+      <div class="chart-wrap chart-wrap-sm"><canvas id="chart-throughput"></canvas></div>
+      <div class="hint-text">Vehicles passed per minute (all lanes)</div>
+    </div>
+    <div class="card span-2">
+      <div class="card-title">Signal timing history</div>
+      <div class="timing-history" id="timing-history"></div>
+      <div class="hint-text">Each block is one signal cycle, colored by which lane received priority. Most recent cycle on the right.</div>
+    </div>
+    <div class="card span-2">
+      <div class="card-title">System event log</div>
+      <div id="analytics-log" class="scroll-log scroll-log-tall">
+        <div class="event-item"><span class="event-msg">No events yet.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="page" data-page="reports" hidden>
+  <div class="report-toolbar">
+    <button class="btn btn-ghost active" id="report-range-today" data-range="today">Today</button>
+    <button class="btn btn-ghost" id="report-range-all" data-range="all">All time</button>
+  </div>
+  <div class="page-grid">
+    <div class="card"><div class="qm"><div class="v" id="rep-vehicles">—</div><div class="l">Total vehicles</div></div></div>
+    <div class="card"><div class="qm"><div class="v" id="rep-cycles">—</div><div class="l">Signal cycles</div></div></div>
+    <div class="card"><div class="qm"><div class="v" id="rep-incidents">—</div><div class="l">Incidents</div></div></div>
+    <div class="card"><div class="qm"><div class="v" id="rep-latency">—</div><div class="l">Avg prediction latency</div></div></div>
+
+    <div class="card span-2">
+      <div class="card-title">Per-lane breakdown <span id="rep-busiest" class="busiest-tag"></span></div>
+      <table class="summary-table" id="rep-lane-table">
+        <tr><th>Lane</th><th>Avg wait</th><th>Avg vehicles</th></tr>
+      </table>
+    </div>
+
+    <div class="card span-2">
+      <div class="card-title">Model performance <span class="hint-text">ml/model_metrics.json — trained Random Forest classifier</span></div>
+      <table class="summary-table" id="rep-model-table">
+        <tr><td>Accuracy</td><td id="model-accuracy">—</td></tr>
+        <tr><td>Precision (weighted)</td><td id="model-precision">—</td></tr>
+        <tr><td>Recall (weighted)</td><td id="model-recall">—</td></tr>
+        <tr><td>F1 score (weighted)</td><td id="model-f1">—</td></tr>
+        <tr><td>5-fold cross-validation mean</td><td id="model-cv">—</td></tr>
+      </table>
+      <div class="hint-text" style="margin-top:10px">Feature importance</div>
+      <div id="model-features"></div>
+    </div>
+  </div>
+</section>
+
 </main>
 
-<footer>AI-Based Intelligent Traffic Congestion Prediction &amp; Control System &nbsp;|&nbsp; KNUST Computer Engineering &nbsp;|&nbsp; Supervisor: Prof. Emmanuel K. Akowuah</footer>
+<footer>AI-Based Intelligent Traffic Congestion Prediction &amp; Control System &nbsp;|&nbsp; KNUST Department of Computer Engineering &nbsp;|&nbsp; Supervisor: Prof. Emmanuel K. Akowuah</footer>
 
 <script type="module" src="/src/client/main.ts"></script>
 </body>

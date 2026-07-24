@@ -1,24 +1,29 @@
 import { EventEmitter } from 'node:events';
 import { LANES, type BridgeState, type DashboardPayload, type Metrics } from '../shared/types.js';
+import { PYTHON_BRIDGE_BASE } from './config.js';
 
-const BRIDGE_URL = process.env.PYTHON_BRIDGE_URL ?? 'http://127.0.0.1:5051/api/state';
+const BRIDGE_URL = `${PYTHON_BRIDGE_BASE}/api/state`;
 const POLL_MS = 500;
+
+function emptyLane() {
+  return {
+    vehicle_count: 0, avg_wait_time: 0, sensor_activation: 0, congestion_level: 0,
+    congestion_label: 'Low', confidence: 0, green_time: 0, signal: 'RED' as const,
+  };
+}
 
 function emptyState(): BridgeState {
   return {
-    lanes: {
-      A: { vehicle_count: 0, avg_wait_time: 0, sensor_activation: 0, congestion_level: 0, congestion_label: 'Low', green_time: 0, signal: 'RED' },
-      B: { vehicle_count: 0, avg_wait_time: 0, sensor_activation: 0, congestion_level: 0, congestion_label: 'Low', green_time: 0, signal: 'RED' },
-      C: { vehicle_count: 0, avg_wait_time: 0, sensor_activation: 0, congestion_level: 0, congestion_label: 'Low', green_time: 0, signal: 'RED' },
-      D: { vehicle_count: 0, avg_wait_time: 0, sensor_activation: 0, congestion_level: 0, congestion_label: 'Low', green_time: 0, signal: 'RED' },
-    },
+    lanes: { A: emptyLane(), B: emptyLane(), C: emptyLane(), D: emptyLane() },
     current_phase: 0,
     phase_green_time: 10,
     emergency: false,
     emergency_lane: null,
+    manual_override: null,
     cycle_count: 0,
     total_vehicles: 0,
     connected: false,
+    source: null,
     last_update: null,
     events: [],
   };
