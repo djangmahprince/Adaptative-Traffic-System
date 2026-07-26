@@ -1,0 +1,39 @@
+{
+  "board": {
+    "design_settings": {}
+  },
+  "boards": [],
+  "cvpcb": {
+    "equivalence_files": []
+  },
+  "libraries": {
+    "pinned_footprint_libs": [],
+    "pinned_symbol_libs": []
+  },
+  "meta": {
+    "filename": "traffic_system.kicad_pro",
+    "version": 1
+  },
+  "net_settings": {
+    "classes": [],
+    "meta": {
+      "version": 3
+    }
+  },
+  "pcbnew": {
+    "page_layout_descr_file": ""
+  },
+  "schematic": {
+    "meta": {
+      "version": 1
+    },
+    "page_layout_descr_file": ""
+  },
+  "sheets": [
+    [
+      "e294ba1a-39dd-4839-8132-42a8cb5802b5",
+      "Root"
+    ]
+  ],
+  "text_variables": {}
+}

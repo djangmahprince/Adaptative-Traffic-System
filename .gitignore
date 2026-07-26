@@ -6,3 +6,5 @@ dashboard/dist/
 
 server/traffic_history.db
 server/traffic_history.db-journal
+
+hardware/hardware.zip

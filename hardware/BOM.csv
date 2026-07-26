@@ -1,0 +1,57 @@
+RefDes,Component,Value/Spec,Qty,Package/Type,Purpose,Status,Notes
+U1,ESP32-WROOM-32 Dev Board,"ESP32-WROOM-32, dual-core 240MHz, WiFi",1,Dev board (DIP-38 module on carrier),Central controller + WiFi TCP client,IN HAND,Confirm exact board variant (affects USB connector type and onboard 3.3V regulator current rating)
+U2,RC522 RFID Reader,"MFRC522, 13.56MHz, SPI",1,Breakout module,Emergency vehicle detection on Lane A,BUY,3.3V logic and supply ONLY — 5V will destroy it
+TAG1,MIFARE 1K Passive Tag,13.56MHz passive,1,Card/fob,Emergency vehicle tag (primary UID DE:AD:BE:EF),BUY,No battery required
+TAG2,MIFARE 1K Passive Tag,13.56MHz passive,1,Card/fob,Emergency vehicle tag (secondary UID 01:02:03:04),BUY,Spare/second tag
+SEN_A,HC-SR04 Ultrasonic Sensor,2-400cm range,1,Breakout module,Lane A vehicle/queue detection,BUY,
+SEN_B,HC-SR04 Ultrasonic Sensor,2-400cm range,1,Breakout module,Lane B vehicle/queue detection,BUY,
+SEN_C,HC-SR04 Ultrasonic Sensor,2-400cm range,1,Breakout module,Lane C vehicle/queue detection,BUY,
+SEN_D,HC-SR04 Ultrasonic Sensor,2-400cm range,1,Breakout module,Lane D vehicle/queue detection,BUY,
+D1,Red LED,5mm standard,1,THT,Lane A signal RED,IN HAND,Verify Vf with multimeter before final resistor calc
+D2,Amber LED,5mm standard,1,THT,Lane A signal AMBER,IN HAND,
+D3,Green LED,5mm standard,1,THT,Lane A signal GREEN,IN HAND,Green LEDs often have higher Vf (~3.0-3.2V) — verify, see validation report
+D4,Red LED,5mm standard,1,THT,Lane B signal RED,IN HAND,
+D5,Amber LED,5mm standard,1,THT,Lane B signal AMBER,IN HAND,
+D6,Green LED,5mm standard,1,THT,Lane B signal GREEN,IN HAND,
+D7,Red LED,5mm standard,1,THT,Lane C signal RED,IN HAND,
+D8,Amber LED,5mm standard,1,THT,Lane C signal AMBER,IN HAND,
+D9,Green LED,5mm standard,1,THT,Lane C signal GREEN,IN HAND,
+D10,Red LED,5mm standard,1,THT,Lane D signal RED,IN HAND,
+D11,Amber LED,5mm standard,1,THT,Lane D signal AMBER,IN HAND,
+D12,Green LED,5mm standard,1,THT,Lane D signal GREEN,IN HAND,
+R1,Resistor,220 ohm 1/4W,1,THT axial,Lane A RED current limit,IN HAND,
+R2,Resistor,220 ohm 1/4W,1,THT axial,Lane A AMBER current limit,IN HAND,
+R3,Resistor,220 ohm 1/4W,1,THT axial,Lane A GREEN current limit,IN HAND,
+R4,Resistor,220 ohm 1/4W,1,THT axial,Lane B RED current limit,IN HAND,
+R5,Resistor,220 ohm 1/4W,1,THT axial,Lane B AMBER current limit,IN HAND,
+R6,Resistor,220 ohm 1/4W,1,THT axial,Lane B GREEN current limit,IN HAND,
+R7,Resistor,220 ohm 1/4W,1,THT axial,Lane C RED current limit,IN HAND,
+R8,Resistor,220 ohm 1/4W,1,THT axial,Lane C AMBER current limit,IN HAND,
+R9,Resistor,220 ohm 1/4W,1,THT axial,Lane C GREEN current limit,IN HAND,
+R10,Resistor,220 ohm 1/4W,1,THT axial,Lane D RED current limit,IN HAND,
+R11,Resistor,220 ohm 1/4W,1,THT axial,Lane D AMBER current limit,IN HAND,
+R12,Resistor,220 ohm 1/4W,1,THT axial,Lane D GREEN current limit,IN HAND,
+R13,Resistor,10k ohm 1/4W,1,THT axial,GPIO15 (TRIG_B) strapping pull-up,BUY,See validation report — recommend verifying boot reliability
+R14,Resistor,10k ohm 1/4W,1,THT axial,GPIO2 (TRIG_C) strapping pull-up,BUY,FLAGGED — see validation report; pull-down may be safer
+R15,Resistor,10k ohm 1/4W,1,THT axial,GPIO12 (TRIG_D) strapping pull-up,BUY,FLAGGED — see validation report; highest boot risk pin
+R16,Resistor,1k ohm 1/4W,1,THT axial,SEN_A ECHO divider (series),BUY,
+R17,Resistor,2k ohm 1/4W,1,THT axial,SEN_A ECHO divider (to GND),BUY,
+R18,Resistor,1k ohm 1/4W,1,THT axial,SEN_B ECHO divider (series),BUY,
+R19,Resistor,2k ohm 1/4W,1,THT axial,SEN_B ECHO divider (to GND),BUY,
+R20,Resistor,1k ohm 1/4W,1,THT axial,SEN_C ECHO divider (series),BUY,
+R21,Resistor,2k ohm 1/4W,1,THT axial,SEN_C ECHO divider (to GND),BUY,
+R22,Resistor,1k ohm 1/4W,1,THT axial,SEN_D ECHO divider (series),BUY,
+R23,Resistor,2k ohm 1/4W,1,THT axial,SEN_D ECHO divider (to GND),BUY,
+C1,Ceramic Capacitor,100nF (0.1uF),1,THT,SEN_A decoupling (VCC-GND),BUY,ADDED — not in original guide; see validation report
+C2,Ceramic Capacitor,100nF (0.1uF),1,THT,SEN_B decoupling (VCC-GND),BUY,ADDED
+C3,Ceramic Capacitor,100nF (0.1uF),1,THT,SEN_C decoupling (VCC-GND),BUY,ADDED
+C4,Ceramic Capacitor,100nF (0.1uF),1,THT,SEN_D decoupling (VCC-GND),BUY,ADDED
+C5,Ceramic Capacitor,100nF (0.1uF),1,THT,U2 (RC522) decoupling (3V3-GND),BUY,ADDED
+C6,Electrolytic Capacitor,220uF 16V,1,THT radial,Bulk decoupling on 5V rail near ESP32 VIN,BUY,ADDED — buffers simultaneous sensor trigger + WiFi TX transients
+BB1,Solderless Breadboard,830-point,1,Breadboard,ESP32 + Lane A + Lane B,CONFIRM,
+BB2,Solderless Breadboard,830-point,1,Breadboard,Lane C + Lane D,CONFIRM,
+W1,Jumper Wire Set,Male-to-male assorted lengths,1,Set,All interconnections,CONFIRM,
+CBL1,USB Cable,"USB-A to Micro-USB/USB-C (match board), data-capable, >=1A rated",1,Cable,ESP32 power + programming,BUY,ADDED — missing from original component list; required for power source decision
+PWR1,USB Power Source,"Laptop USB port or USB power bank, 5V >=1A",1,Power source,System power,CONFIRM,Confirm source can sustain >=500mA continuous
+BASE1,Cardboard Base,~60cm x 60cm firm cardboard,1,Structural,Intersection model base,BUILD,
+VEH1,Toy Vehicles,~5cm scale model cars,4,Model,Traffic simulation,SOURCE,One must carry RFID tag

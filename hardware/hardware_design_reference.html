@@ -1,0 +1,535 @@
+<title>AI Traffic Control System — Hardware Design Reference</title>
+<style>
+  :root {
+    --bg: #0f1b2d;
+    --bg-card: #16263d;
+    --bg-card-raised: #1c3049;
+    --line: rgba(234, 242, 251, 0.10);
+    --line-strong: rgba(234, 242, 251, 0.22);
+    --ink: #eaf2fb;
+    --muted: #8ba3bf;
+    --muted-dim: #5f7791;
+    --accent: #ffb454;
+    --accent-dim: rgba(255, 180, 84, 0.14);
+    --teal: #5ecbc8;
+    --teal-dim: rgba(94, 203, 200, 0.14);
+    --red: #ff7a7a;
+    --red-dim: rgba(255, 122, 122, 0.14);
+    --green: #74d39a;
+    --green-dim: rgba(116, 211, 154, 0.14);
+    --font-head: "Bahnschrift SemiCondensed", "SF Compact Condensed", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
+    --font-body: "Iowan Old Style", "Charter", "Georgia", "Noto Serif", serif;
+    --font-mono: "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f1ea;
+    --bg-card: #ffffff;
+    --bg-card-raised: #ffffff;
+    --line: rgba(15, 27, 45, 0.12);
+    --line-strong: rgba(15, 27, 45, 0.28);
+    --ink: #1a2436;
+    --muted: #5b6b80;
+    --muted-dim: #8c9bad;
+    --accent: #b5720a;
+    --accent-dim: rgba(181, 114, 10, 0.10);
+    --teal: #147d78;
+    --teal-dim: rgba(20, 125, 120, 0.10);
+    --red: #c23c3c;
+    --red-dim: rgba(194, 60, 60, 0.09);
+    --green: #2f8a5c;
+    --green-dim: rgba(47, 138, 92, 0.10);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f3f1ea;
+      --bg-card: #ffffff;
+      --bg-card-raised: #ffffff;
+      --line: rgba(15, 27, 45, 0.12);
+      --line-strong: rgba(15, 27, 45, 0.28);
+      --ink: #1a2436;
+      --muted: #5b6b80;
+      --muted-dim: #8c9bad;
+      --accent: #b5720a;
+      --accent-dim: rgba(181, 114, 10, 0.10);
+      --teal: #147d78;
+      --teal-dim: rgba(20, 125, 120, 0.10);
+      --red: #c23c3c;
+      --red-dim: rgba(194, 60, 60, 0.09);
+      --green: #2f8a5c;
+      --green-dim: rgba(47, 138, 92, 0.10);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 0 24px 80px;
+  }
+
+  /* ── Title block ─────────────────────────────────────────── */
+  .titleblock {
+    border-bottom: 2px solid var(--line-strong);
+    padding: 28px 0 18px;
+    margin-bottom: 36px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 16px;
+    align-items: end;
+  }
+  .titleblock h1 {
+    font-family: var(--font-head);
+    font-weight: 700;
+    font-size: 1.7rem;
+    letter-spacing: 0.01em;
+    margin: 0 0 4px;
+    text-wrap: balance;
+  }
+  .titleblock .subhead {
+    font-family: var(--font-head);
+    color: var(--muted);
+    font-size: 0.86rem;
+    letter-spacing: 0.02em;
+  }
+  .titleblock .meta {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  .titleblock .meta b { color: var(--ink); font-weight: 600; }
+
+  .scope-strip {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 40px;
+  }
+  .chip {
+    font-family: var(--font-head);
+    font-size: 0.72rem;
+    letter-spacing: 0.03em;
+    padding: 5px 12px;
+    border-radius: 3px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+  }
+  .chip.on { color: var(--teal); border-color: var(--teal); background: var(--teal-dim); }
+
+  /* ── Section scaffolding ─────────────────────────────────── */
+  section { margin-bottom: 56px; }
+  .sec-label {
+    font-family: var(--font-head);
+    font-size: 0.74rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted-dim);
+    border-top: 1px solid var(--line);
+    padding-top: 8px;
+    margin-bottom: 14px;
+  }
+  h2 {
+    font-family: var(--font-head);
+    font-weight: 700;
+    font-size: 1.3rem;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--font-head);
+    font-weight: 600;
+    font-size: 1.02rem;
+    margin: 24px 0 10px;
+  }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  .lede { color: var(--muted); font-size: 0.96rem; max-width: 62ch; margin-bottom: 22px; }
+
+  /* ── Diagram cards ───────────────────────────────────────── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 20px;
+  }
+  .diagram-wrap { overflow-x: auto; }
+  .diagram-wrap svg { display: block; min-width: 640px; }
+  .diagram-caption {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 12px;
+    border-top: 1px dashed var(--line);
+    padding-top: 10px;
+  }
+
+  /* ── Tables ──────────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  thead th {
+    font-family: var(--font-head);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 0 12px 8px 0;
+    border-bottom: 1px solid var(--line-strong);
+    white-space: nowrap;
+  }
+  td {
+    padding: 8px 12px 8px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  td.num, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .strap { color: var(--accent); font-weight: 600; }
+
+  /* ── Flags / callouts ────────────────────────────────────── */
+  .flag {
+    display: flex;
+    gap: 14px;
+    padding: 14px 16px;
+    border-radius: 6px;
+    margin: 16px 0;
+    border: 1px solid;
+  }
+  .flag .mark { font-family: var(--font-head); font-weight: 700; font-size: 0.72rem; letter-spacing: 0.06em; white-space: nowrap; padding-top: 2px; }
+  .flag p { margin: 0; font-size: 0.92rem; }
+  .flag.warn { background: var(--accent-dim); border-color: var(--accent); }
+  .flag.warn .mark { color: var(--accent); }
+  .flag.pass { background: var(--green-dim); border-color: var(--green); }
+  .flag.pass .mark { color: var(--green); }
+  .flag.critical { background: var(--red-dim); border-color: var(--red); }
+  .flag.critical .mark { color: var(--red); }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--bg-card-raised);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+    margin-top: 60px;
+    color: var(--muted-dim);
+    font-size: 0.8rem;
+    font-family: var(--font-head);
+  }
+
+  /* SVG diagram theming via currentColor + CSS vars */
+  .d-line { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .d-line-strong { stroke: var(--ink); stroke-width: 1.6; fill: none; }
+  .d-box { fill: var(--bg-card-raised); stroke: var(--line-strong); stroke-width: 1.2; }
+  .d-box-accent { fill: var(--accent-dim); stroke: var(--accent); stroke-width: 1.3; }
+  .d-box-teal { fill: var(--teal-dim); stroke: var(--teal); stroke-width: 1.3; }
+  .d-dot { fill: var(--ink); }
+  .d-label { font-family: var(--font-head); font-size: 12px; fill: var(--ink); }
+  .d-label-sm { font-family: var(--font-mono); font-size: 10.5px; fill: var(--muted); }
+  .d-label-accent { font-family: var(--font-head); font-size: 11px; fill: var(--accent); font-weight: 700; }
+</style>
+
+<main>
+
+  <div class="titleblock">
+    <div>
+      <h1>AI Traffic Control System — Hardware Design Reference</h1>
+      <div class="subhead">ESP32-WROOM-32 · 4-lane intersection · KNUST Dept. of Computer Engineering</div>
+    </div>
+    <div class="meta">
+      SHEET <b>1/1</b> · REV <b>A</b><br>
+      SCOPE <b>Breadboard / prototype</b><br>
+      POWER <b>USB 5V</b><br>
+      SUPERSEDES <b>none</b>
+    </div>
+  </div>
+
+  <div class="scope-strip">
+    <span class="chip on">✓ Schematic + wiring docs (not fabricated PCB)</span>
+    <span class="chip on">✓ USB-powered</span>
+    <span class="chip">✕ Custom PCB layout</span>
+    <span class="chip">✕ Battery/regulator design</span>
+  </div>
+
+  <section>
+    <div class="sec-label">01 — Architecture</div>
+    <h2>Signal flow</h2>
+    <p class="lede">How data and control move through the system — from sensor to signal head, and from the ESP32 to the AI model running on the Python server.</p>
+    <div class="card">
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg">
+          <!-- Sensors -->
+          <rect class="d-box" x="20" y="30" width="150" height="54" rx="3"/>
+          <text class="d-label" x="95" y="52" text-anchor="middle">4× HC-SR04</text>
+          <text class="d-label-sm" x="95" y="70" text-anchor="middle">ultrasonic sensors</text>
+
+          <rect class="d-box" x="20" y="150" width="150" height="54" rx="3"/>
+          <text class="d-label" x="95" y="172" text-anchor="middle">RC522</text>
+          <text class="d-label-sm" x="95" y="190" text-anchor="middle">RFID reader (Lane A)</text>
+
+          <!-- ESP32 -->
+          <rect class="d-box-accent" x="270" y="90" width="180" height="120" rx="3"/>
+          <text class="d-label-accent" x="360" y="145" text-anchor="middle">ESP32-WROOM-32</text>
+          <text class="d-label-sm" x="360" y="162" text-anchor="middle">moving-avg filter</text>
+          <text class="d-label-sm" x="360" y="177" text-anchor="middle">JSON packet builder</text>
+          <text class="d-label-sm" x="360" y="192" text-anchor="middle">2-phase LED driver</text>
+
+          <!-- LEDs -->
+          <rect class="d-box" x="570" y="30" width="150" height="54" rx="3"/>
+          <text class="d-label" x="645" y="52" text-anchor="middle">12× Signal LEDs</text>
+          <text class="d-label-sm" x="645" y="70" text-anchor="middle">R/A/G × 4 lanes</text>
+
+          <!-- WiFi / server -->
+          <rect class="d-box-teal" x="570" y="150" width="150" height="54" rx="3"/>
+          <text class="d-label" x="645" y="172" text-anchor="middle" style="fill:var(--teal)">WiFi → TCP :5050</text>
+          <text class="d-label-sm" x="645" y="190" text-anchor="middle">mobile hotspot</text>
+
+          <rect class="d-box-teal" x="750" y="150" width="130" height="54" rx="3"/>
+          <text class="d-label" x="815" y="172" text-anchor="middle" style="fill:var(--teal)">Python server</text>
+          <text class="d-label-sm" x="815" y="190" text-anchor="middle">RF model + phase logic</text>
+
+          <!-- arrows -->
+          <path class="d-line" d="M170,57 H270" marker-end="url(#arrow)"/>
+          <path class="d-line" d="M170,177 H270" marker-end="url(#arrow)"/>
+          <path class="d-line" d="M450,110 H510 V57 H570" marker-end="url(#arrow)"/>
+          <path class="d-line" d="M450,190 H510 V177 H570" marker-end="url(#arrow)"/>
+          <path class="d-line" d="M720,177 H750" marker-end="url(#arrow)"/>
+          <text class="d-label-sm" x="510" y="40" text-anchor="middle">GPIO ×12</text>
+          <text class="d-label-sm" x="510" y="200" text-anchor="middle">every 2s</text>
+
+          <!-- legend note -->
+          <text class="d-label-sm" x="20" y="260" >Sensor reading → ESP32 predicts nothing locally; it packages readings and sends them</text>
+          <text class="d-label-sm" x="20" y="276">over WiFi. The Random Forest model and 2-phase signal logic run on the Python server —</text>
+          <text class="d-label-sm" x="20" y="292">the response packet tells the ESP32 which lanes go green and for how long.</text>
+
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 z" style="fill:var(--muted)"/>
+            </marker>
+          </defs>
+        </svg>
+      </div>
+      <div class="diagram-caption">Fig. 1 — Signal flow. GPIO connections shown in aggregate; see §04 for exact pin numbers.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">02 — Power</div>
+    <h2>Power distribution</h2>
+    <p class="lede">Everything runs off the ESP32 dev board's onboard regulation — USB 5V in, no external regulator needed. Decoupling capacitors are the one addition beyond the original build guide (§05 explains why).</p>
+    <div class="card">
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg">
+          <rect class="d-box-teal" x="20" y="140" width="140" height="50" rx="3"/>
+          <text class="d-label" x="90" y="170" text-anchor="middle" style="fill:var(--teal)">USB 5V</text>
+          <text class="d-label-sm" x="90" y="205" text-anchor="middle">laptop / power bank</text>
+
+          <path class="d-line-strong" d="M160,165 H230" marker-end="url(#arrow2)"/>
+
+          <rect class="d-box-accent" x="230" y="120" width="170" height="90" rx="3"/>
+          <text class="d-label-accent" x="315" y="150" text-anchor="middle">ESP32 onboard</text>
+          <text class="d-label-sm" x="315" y="167" text-anchor="middle">AMS1117 LDO</text>
+          <text class="d-label-sm" x="315" y="184" text-anchor="middle">5V → 3.3V</text>
+          <circle class="d-dot" cx="230" cy="165" r="2.5"/>
+
+          <!-- 5V rail branch -->
+          <path class="d-line" d="M180,165 V60 H500" marker-end="url(#arrow2)"/>
+          <circle class="d-dot" cx="180" cy="165" r="2.5"/>
+          <rect class="d-box" x="500" y="30" width="200" height="60" rx="3"/>
+          <text class="d-label" x="600" y="55" text-anchor="middle">4× HC-SR04 VCC</text>
+          <text class="d-label-sm" x="600" y="73" text-anchor="middle">+ C1–C4 (100nF each) · C6 (220µF bulk)</text>
+
+          <!-- 3.3V rail branch -->
+          <path class="d-line" d="M400,165 H500" marker-end="url(#arrow2)"/>
+          <rect class="d-box" x="500" y="140" width="200" height="60" rx="3"/>
+          <text class="d-label" x="600" y="165" text-anchor="middle">RC522 3.3V</text>
+          <text class="d-label-sm" x="600" y="183" text-anchor="middle">+ C5 (100nF)</text>
+
+          <!-- GPIO current (from chip, not rail) -->
+          <path class="d-line" d="M315,120 V95 H500" marker-end="url(#arrow2)"/>
+          <rect class="d-box" x="500" y="240" width="200" height="60" rx="3"/>
+          <path class="d-line" d="M400,95 V270 H500" marker-end="url(#arrow2)"/>
+          <text class="d-label" x="600" y="265" text-anchor="middle">12× LED GPIO drive</text>
+          <text class="d-label-sm" x="600" y="283" text-anchor="middle">≈5.9mA each via 220Ω, ≈71mA peak (all 12 lit)</text>
+
+          <text class="d-label-sm" x="20" y="240">5V rail: ~60mA (sensors) + bulk cap buffers trigger transients</text>
+          <text class="d-label-sm" x="20" y="256">3.3V rail: ~26mA (RC522) + WiFi TX bursts ~250–300mA + LED drive ~71mA</text>
+          <text class="d-label-sm" x="20" y="272" style="fill:var(--accent)">Peak combined draw ≈350–400mA — confirm USB source rated ≥1A (see §05)</text>
+
+          <defs>
+            <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 z" style="fill:var(--ink)"/>
+            </marker>
+          </defs>
+        </svg>
+      </div>
+      <div class="diagram-caption">Fig. 2 — Power distribution. LEDs draw from GPIO pin current, not a separate rail switch (§05.2).</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">03 — Layout</div>
+    <h2>Wiring overview by lane</h2>
+    <p class="lede">Each lane repeats the same pattern: one HC-SR04 (with its ECHO divider), three LEDs, one 220Ω resistor per LED. Lane letters match the firmware's <code>LANE_PINS[4][3]</code> ordering.</p>
+    <div class="card">
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg">
+          <text class="d-label-sm" x="10" y="20">GPIO</text>
+          <text class="d-label-sm" x="130" y="20">divider / resistor</text>
+          <text class="d-label-sm" x="330" y="20">module</text>
+
+          <!-- TRIG -->
+          <rect class="d-box" x="10" y="34" width="70" height="30" rx="2"/>
+          <text class="d-label-sm" x="45" y="53" text-anchor="middle">TRIG</text>
+          <path class="d-line" d="M80,49 H330" marker-end="url(#arrow3)"/>
+          <rect class="d-box-teal" x="330" y="34" width="130" height="30" rx="2"/>
+          <text class="d-label-sm" x="395" y="53" text-anchor="middle" style="fill:var(--teal)">HC-SR04</text>
+
+          <!-- ECHO -->
+          <rect class="d-box" x="10" y="80" width="70" height="30" rx="2"/>
+          <text class="d-label-sm" x="45" y="99" text-anchor="middle">ECHO</text>
+          <path class="d-line" d="M330,95 H230" marker-end="url(#arrow4)"/>
+          <rect class="d-box" x="150" y="80" width="80" height="30" rx="2"/>
+          <text class="d-label-sm" x="190" y="99" text-anchor="middle">1k / 2k div.</text>
+          <path class="d-line" d="M150,95 H80" marker-end="url(#arrow4)"/>
+
+          <!-- LEDs -->
+          <rect class="d-box" x="10" y="140" width="70" height="30" rx="2"/>
+          <text class="d-label-sm" x="45" y="159" text-anchor="middle" style="fill:var(--red)">GPIO·R</text>
+          <path class="d-line" d="M80,155 H150" marker-end="url(#arrow3)"/>
+          <rect class="d-box" x="150" y="140" width="60" height="30" rx="2"/>
+          <text class="d-label-sm" x="180" y="159" text-anchor="middle">220Ω</text>
+          <path class="d-line" d="M210,155 H330" marker-end="url(#arrow3)"/>
+          <rect class="d-box-accent" x="330" y="140" width="90" height="30" rx="2"/>
+          <text class="d-label" x="375" y="159" text-anchor="middle" style="fill:var(--red)">● RED</text>
+
+          <rect class="d-box" x="10" y="180" width="70" height="30" rx="2"/>
+          <text class="d-label-sm" x="45" y="199" text-anchor="middle" style="fill:var(--accent)">GPIO·A</text>
+          <path class="d-line" d="M80,195 H150" marker-end="url(#arrow3)"/>
+          <rect class="d-box" x="150" y="180" width="60" height="30" rx="2"/>
+          <text class="d-label-sm" x="180" y="199" text-anchor="middle">220Ω</text>
+          <path class="d-line" d="M210,195 H330" marker-end="url(#arrow3)"/>
+          <rect class="d-box-accent" x="330" y="180" width="90" height="30" rx="2"/>
+          <text class="d-label" x="375" y="199" text-anchor="middle" style="fill:var(--accent)">● AMBER</text>
+
+          <rect class="d-box" x="10" y="220" width="70" height="30" rx="2"/>
+          <text class="d-label-sm" x="45" y="239" text-anchor="middle" style="fill:var(--green)">GPIO·G</text>
+          <path class="d-line" d="M80,235 H150" marker-end="url(#arrow3)"/>
+          <rect class="d-box" x="150" y="220" width="60" height="30" rx="2"/>
+          <text class="d-label-sm" x="180" y="239" text-anchor="middle">220Ω</text>
+          <path class="d-line" d="M210,235 H330" marker-end="url(#arrow3)"/>
+          <rect class="d-box-accent" x="330" y="220" width="90" height="30" rx="2"/>
+          <text class="d-label" x="375" y="239" text-anchor="middle" style="fill:var(--green)">● GREEN</text>
+
+          <text class="d-label-sm" x="480" y="55">Repeat ×4 for Lanes A, B, C, D —</text>
+          <text class="d-label-sm" x="480" y="72">only the GPIO numbers change.</text>
+          <text class="d-label-sm" x="480" y="95">See §04 for exact numbers per lane.</text>
+
+          <defs>
+            <marker id="arrow3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" style="fill:var(--muted)"/></marker>
+            <marker id="arrow4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M6,0 L0,3 L6,6 z" style="fill:var(--muted)"/></marker>
+          </defs>
+        </svg>
+      </div>
+      <div class="diagram-caption">Fig. 3 — Per-lane wiring pattern (this example: Lane A). Identical topology for B, C, D.</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">04 — Pin Assignment</div>
+    <h2>ESP32 GPIO map</h2>
+    <p class="lede">Sourced from <code>firmware/traffic_controller/traffic_controller.ino</code>, cross-checked against the project guide — this design documents these pins, it does not reinterpret them.</p>
+
+    <h3>Traffic signal LEDs</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Lane</th><th>Approach</th><th>Red</th><th>Amber</th><th>Green</th></tr></thead>
+        <tbody>
+          <tr><td>A</td><td>West</td><td class="num">14</td><td class="num">27</td><td class="num">26</td></tr>
+          <tr><td>B</td><td>North</td><td class="num">25</td><td class="num">33</td><td class="num">32</td></tr>
+          <tr><td>C</td><td>East</td><td class="num">19</td><td class="num">18</td><td class="num"><span class="strap">23</span></td></tr>
+          <tr><td>D</td><td>South</td><td class="num">17</td><td class="num">16</td><td class="num">4</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:0.85rem;color:var(--muted)">Lane C Green uses GPIO 23, not GPIO 5 — GPIO 5 is a boot-strapping pin and driving it LOW via an LED risks preventing boot.</p>
+
+    <h3>HC-SR04 sensors</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Lane</th><th>TRIG</th><th>ECHO</th><th>Strapping</th></tr></thead>
+        <tbody>
+          <tr><td>A</td><td class="num">13</td><td class="num">34</td><td>—</td></tr>
+          <tr><td>B</td><td class="num strap">15</td><td class="num">35</td><td class="strap">MTDO</td></tr>
+          <tr><td>C</td><td class="num strap">2</td><td class="num">36</td><td class="strap">yes</td></tr>
+          <tr><td>D</td><td class="num strap">12</td><td class="num">39</td><td class="strap">MTDI — highest risk</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>RC522 RFID reader</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Function</th><th>GPIO</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>SDA / SS</td><td class="num">21</td><td>—</td></tr>
+          <tr><td>SCK</td><td class="num">22</td><td>—</td></tr>
+          <tr><td>MOSI</td><td class="num strap">0</td><td>Strapping — must be HIGH at boot</td></tr>
+          <tr><td>MISO</td><td class="num">3</td><td>Shared with UART0 RX — <code>Serial.end()</code> called first</td></tr>
+          <tr><td>RST</td><td class="num">13</td><td>Shared with SEN_A.TRIG (sequential access, no contention)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">05 — Validation Report</div>
+    <h2>Design checks</h2>
+
+    <div class="flag pass"><span class="mark">PASS</span><p><b>GPIO conflicts:</b> 24 unique pins in use, zero unintended overlaps, none in the reserved 6–11 range, GPIO 5 correctly avoided.</p></div>
+    <div class="flag pass"><span class="mark">PASS</span><p><b>Voltage levels:</b> RC522 direct 3.3V-to-3.3V (no level shifting needed); HC-SR04 ECHO divider outputs 3.33V, within the 3.6V absolute max.</p></div>
+    <div class="flag pass"><span class="mark">PASS</span><p><b>Current budget:</b> ≈71mA peak across all 12 LEDs, ≈60mA sensors, ≈26mA RC522 — combined with WiFi TX bursts, ≈350–400mA peak, comfortably inside a typical dev board's onboard regulator capacity.</p></div>
+    <div class="flag warn"><span class="mark">CHECK</span><p><b>Green LED forward voltage:</b> the guide's current calc assumes Vf≈2.0V; many green LEDs run higher (2.8–3.2V), which would make them noticeably dimmer at 220Ω. Measure actual Vf before final assembly; drop to ~150Ω on green channels only if needed.</p></div>
+    <div class="flag critical"><span class="mark">FLAGGED</span><p><b>GPIO 2 / GPIO 12 pull-ups:</b> the guide specifies 10kΩ pull-ups to 3.3V on both. GPIO 12 (MTDI) determines flash voltage at boot — pulling it HIGH can select the wrong voltage and prevent boot on most WROOM-32 modules. GPIO 15 is low-risk and fine as specified; GPIO 2 and 12 are not certain failures, but warrant a power-cycle test before final assembly, with pull-down as a fallback if boot becomes unreliable.</p></div>
+    <div class="flag pass"><span class="mark">PASS</span><p><b>RFID boot interaction:</b> firmware already calls <code>Serial.end()</code> before RC522 init to free GPIO3/UART0 RX — correctly handled.</p></div>
+  </section>
+
+  <section>
+    <div class="sec-label">06 — Deliverables</div>
+    <h2>What's in <code>hardware/</code></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Contents</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">README.md</td><td>Design rationale, full validation report, flagged assumptions</td></tr>
+          <tr><td class="mono">pin_assignment.md</td><td>Complete GPIO table + reserved/avoid list</td></tr>
+          <tr><td class="mono">netlist.md</td><td>Net-by-net connection list (31 logical paths / 43 physical nets)</td></tr>
+          <tr><td class="mono">BOM.csv</td><td>Bill of materials with reference designators, spreadsheet-ready</td></tr>
+          <tr><td class="mono">connector_list.md</td><td>Headers, jumper wiring, breadboard allocation</td></tr>
+          <tr><td class="mono">traffic_system.kicad_sch/.kicad_pro</td><td>Generated KiCad schematic — open and run ERC before trusting for fabrication (see README §5)</td></tr>
+          <tr><td class="mono">generate_kicad_schematic.py / verify_schematic.py</td><td>Reproducible generation + automated cross-checks (47/47 parts placed, 0 dead-end nets)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    AI Traffic Control System — Hardware Design Reference · Prepared for the KNUST prototype build stage · Scope confirmed: breadboard/cardboard model, USB-powered
+  </footer>
+
+</main>
