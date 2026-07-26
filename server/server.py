@@ -18,6 +18,12 @@
 #  Emergency override: all RED except emergency lane GREEN,
 #  triggered either by the RC522 RFID reader on Lane A (real
 #  hardware) or by a manual dashboard override (for demos).
+#
+#  This module runs in the same process as the Flask dashboard
+#  (see dashboard/app.py) — Flask imports it directly and reads
+#  shared_state / calls its functions in-process. There is no
+#  separate bridge server; that's only needed when the web layer
+#  runs in a different process/language than the ML+TCP server.
 # ============================================================
 
 import socket
@@ -29,8 +35,6 @@ import time
 import os
 import logging
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
 
 import history
 
@@ -41,12 +45,6 @@ METRICS_PATH = os.path.join(ML_DIR, 'model_metrics.json')
 
 HOST = '0.0.0.0'
 PORT = 5050
-
-# Internal state bridge — read-only JSON feed (plus the manual-override
-# control endpoint) consumed by the Node/TS dashboard (dashboard/).
-# Bound to localhost only; it is not the public web server.
-BRIDGE_HOST = '127.0.0.1'
-BRIDGE_PORT = 5051
 
 # Green time per congestion level (seconds)
 GREEN_TIME = {0: 10, 1: 20, 2: 35}
@@ -422,117 +420,61 @@ def start_tcp_server(model):
     server_sock.close()
 
 
-class StateBridgeHandler(BaseHTTPRequestHandler):
-    """Serves shared_state + history as JSON for the Node/TS dashboard,
-    and accepts manual-override commands from it."""
+# ── In-process accessors for the Flask dashboard ──────────────
+# These replace what used to be an HTTP bridge — Flask calls them as plain
+# function calls in the same interpreter, no network hop involved.
 
-    def log_message(self, format, *args):
-        pass  # the TCP server's own logging is the source of truth
-
-    def _send_json(self, payload, status=200):
-        body = json.dumps(payload).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        query = parse_qs(parsed.query)
-
-        if parsed.path == '/api/state':
-            with state_lock:
-                payload = {
-                    'lanes': {k: dict(v) for k, v in shared_state['lanes'].items()},
-                    'current_phase':    shared_state['current_phase'],
-                    'phase_green_time': shared_state['phase_green_time'],
-                    'emergency':        shared_state['emergency'],
-                    'emergency_lane':   shared_state['emergency_lane'],
-                    'manual_override':  shared_state['manual_override'],
-                    'cycle_count':      shared_state['cycle_count'],
-                    'total_vehicles':   shared_state['total_vehicles'],
-                    'connected':        shared_state['connected'],
-                    'source':           shared_state['source'],
-                    'last_update':      shared_state['last_update'],
-                    'events':           shared_state['events'][:10],
-                }
-            self._send_json(payload)
-
-        elif parsed.path == '/api/history':
-            limit = int(query.get('limit', ['200'])[0])
-            self._send_json({'cycles': history.get_recent_cycles(limit)})
-
-        elif parsed.path == '/api/events':
-            category = query.get('category', [None])[0]
-            limit = int(query.get('limit', ['50'])[0])
-            self._send_json({'events': history.get_events(category, limit)})
-
-        elif parsed.path == '/api/network':
-            with state_lock:
-                connected = shared_state['connected']
-                source = shared_state['source']
-                last_update = shared_state['last_update']
-            self._send_json({
-                'connected': connected,
-                'source': source,
-                'last_update': last_update,
-                **history.get_network_stats(),
-            })
-
-        elif parsed.path == '/api/reports/summary':
-            range_ = query.get('range', ['today'])[0]
-            self._send_json(history.get_report_summary(range_))
-
-        elif parsed.path == '/api/model':
-            try:
-                with open(METRICS_PATH) as f:
-                    self._send_json(json.load(f))
-            except FileNotFoundError:
-                self._send_json({'error': 'model_metrics.json not found'}, status=404)
-
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_POST(self):
-        if self.path != '/api/override':
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        length = int(self.headers.get('Content-Length', 0))
-        try:
-            body = json.loads(self.rfile.read(length) or b'{}')
-        except json.JSONDecodeError:
-            self._send_json({'error': 'invalid JSON body'}, status=400)
-            return
-
-        action = body.get('action')
-        lane = body.get('lane')
-        level = body.get('level')
-        if action in ('emergency', 'congestion') and lane not in LANES:
-            self._send_json({'error': 'lane must be one of A/B/C/D'}, status=400)
-            return
-        if action == 'congestion' and level not in (0, 1, 2):
-            self._send_json({'error': 'level must be 0, 1 or 2'}, status=400)
-            return
-
-        ok = apply_manual_override(action, lane=lane, level=level)
-        if not ok:
-            self._send_json({'error': 'unknown action'}, status=400)
-            return
-        self._send_json({'ok': True})
+def get_state_snapshot():
+    with state_lock:
+        return {
+            'lanes': {k: dict(v) for k, v in shared_state['lanes'].items()},
+            'current_phase':    shared_state['current_phase'],
+            'phase_green_time': shared_state['phase_green_time'],
+            'emergency':        shared_state['emergency'],
+            'emergency_lane':   shared_state['emergency_lane'],
+            'manual_override':  shared_state['manual_override'],
+            'cycle_count':      shared_state['cycle_count'],
+            'total_vehicles':   shared_state['total_vehicles'],
+            'connected':        shared_state['connected'],
+            'source':           shared_state['source'],
+            'last_update':      shared_state['last_update'],
+            'events':           shared_state['events'][:10],
+        }
 
 
-def start_state_bridge():
+def get_metrics():
+    state = get_state_snapshot()
+    waits = [state['lanes'][l]['avg_wait_time'] for l in LANES]
+    avg_wait_time = round(sum(waits) / len(waits), 1) if waits else 0
+    return {
+        'total_vehicles': state['total_vehicles'],
+        'cycle_count':    state['cycle_count'],
+        'avg_wait_time':  avg_wait_time,
+    }
+
+
+def get_network_snapshot():
+    state = get_state_snapshot()
+    return {
+        'connected':   state['connected'],
+        'source':      state['source'],
+        'last_update': state['last_update'],
+        **history.get_network_stats(),
+    }
+
+
+def get_model_metrics():
+    with open(METRICS_PATH) as f:
+        return json.load(f)
+
+
+def init_app():
+    """Called once by dashboard/app.py before starting Flask, and by the
+    TCP-server thread's own startup — safe to call twice (idempotent)."""
     history.init_db()
-    httpd = ThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), StateBridgeHandler)
-    log.info(f"  State bridge     : http://{BRIDGE_HOST}:{BRIDGE_PORT}/api/state (internal)")
-    httpd.serve_forever()
 
 
 if __name__ == '__main__':
     model = load_model()
-    threading.Thread(target=start_state_bridge, daemon=True).start()
+    init_app()
     start_tcp_server(model)

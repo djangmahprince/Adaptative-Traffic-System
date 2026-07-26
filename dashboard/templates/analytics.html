@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block pagetitle %}Analytics{% endblock %}
+
+{% block content %}
+<div class="page-grid">
+  <div class="card-white">
+    <div class="card-head">Traffic Density Over Time</div>
+    <div class="chart-wrap"><svg id="chart-density" viewBox="0 0 300 100" preserveAspectRatio="none"></svg></div>
+    <div class="chart-legend">
+      <span><span class="sw" style="background:#3b82f6"></span>A</span>
+      <span><span class="sw" style="background:#22c55e"></span>B</span>
+      <span><span class="sw" style="background:#f59e0b"></span>C</span>
+      <span><span class="sw" style="background:#f43f5e"></span>D</span>
+    </div>
+  </div>
+
+  <div class="card-white">
+    <div class="card-head">Queue Length Over Time</div>
+    <div class="chart-wrap"><svg id="chart-queue" viewBox="0 0 300 100" preserveAspectRatio="none"></svg></div>
+    <div class="chart-hint">Vehicles waiting per lane, most recent cycles</div>
+  </div>
+
+  <div class="card-white">
+    <div class="card-head">Congestion Trend</div>
+    <div class="chart-wrap"><svg id="chart-trend" viewBox="0 0 300 100" preserveAspectRatio="none"></svg></div>
+    <div class="chart-hint">Low / Medium / High per lane</div>
+  </div>
+
+  <div class="card-white">
+    <div class="card-head">Vehicle Throughput</div>
+    <div class="chart-wrap"><svg id="chart-throughput" viewBox="0 0 300 100" preserveAspectRatio="none"></svg></div>
+    <div class="chart-hint">Vehicles passed per minute (all lanes)</div>
+  </div>
+
+  <div class="card-white">
+    <div class="card-head">Signal Timing History</div>
+    <div class="timing-history" id="timing-history"></div>
+    <div class="chart-hint">Most recent cycle on the right</div>
+  </div>
+
+  <div class="card-white">
+    <div class="card-head">System Event Log</div>
+    <div class="scroll-log" id="event-log"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='analytics.js') }}"></script>
+{% endblock %}

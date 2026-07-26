@@ -1,9 +1,6 @@
 __pycache__/
 *.pyc
 
-dashboard/node_modules/
-dashboard/dist/
-
 server/traffic_history.db
 server/traffic_history.db-journal
 

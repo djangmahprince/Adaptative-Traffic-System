@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block pagetitle %}Reports{% endblock %}
+
+{% block content %}
+<div class="report-toolbar">
+  <button class="btn-toggle active" id="range-today" data-range="today">Today</button>
+  <button class="btn-toggle" id="range-all" data-range="all">All time</button>
+</div>
+
+<div class="page-grid">
+  <div class="stat-tile"><div class="label">TOTAL VEHICLES</div><div class="value" id="rep-vehicles">—</div></div>
+  <div class="stat-tile"><div class="label">SIGNAL CYCLES</div><div class="value" id="rep-cycles">—</div></div>
+  <div class="stat-tile"><div class="label">INCIDENTS</div><div class="value" id="rep-incidents">—</div></div>
+
+  <div class="card-white span-3">
+    <div class="card-head">Per-Lane Breakdown <span class="busiest-tag" id="rep-busiest"></span></div>
+    <table class="summary-table" id="rep-lane-table">
+      <tr><th>Lane</th><th>Avg wait</th><th>Avg vehicles</th></tr>
+    </table>
+  </div>
+
+  <div class="card-white span-3">
+    <div class="card-head">Model Performance</div>
+    <div class="hint-text" style="margin-bottom:8px">ml/model_metrics.json — trained Random Forest classifier</div>
+    <table class="summary-table">
+      <tr><td>Accuracy</td><td id="model-accuracy">—</td></tr>
+      <tr><td>Precision (weighted)</td><td id="model-precision">—</td></tr>
+      <tr><td>Recall (weighted)</td><td id="model-recall">—</td></tr>
+      <tr><td>F1 score (weighted)</td><td id="model-f1">—</td></tr>
+      <tr><td>5-fold cross-validation mean</td><td id="model-cv">—</td></tr>
+      <tr><td>Avg prediction latency</td><td id="rep-latency">—</td></tr>
+    </table>
+    <div class="hint-text" style="margin-top:12px">Feature importance</div>
+    <div id="model-features"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='reports.js') }}"></script>
+{% endblock %}

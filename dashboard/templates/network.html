@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block pagetitle %}Network{% endblock %}
+
+{% block content %}
+<div class="page-grid">
+  <div class="card-white">
+    <div class="card-head">Connection Status</div>
+    <div class="network-hero">
+      <div class="dot-lg" id="net-dot"></div>
+      <div>
+        <div class="network-state" id="net-state">Disconnected</div>
+        <div class="network-sub" id="net-source">—</div>
+      </div>
+    </div>
+    <table class="summary-table">
+      <tr><td>Last update</td><td id="net-last-update">—</td></tr>
+      <tr><td>Successful connections</td><td id="net-connect-count">—</td></tr>
+      <tr><td>Disconnections</td><td id="net-disconnect-count">—</td></tr>
+    </table>
+  </div>
+
+  <div class="card-white">
+    <div class="card-head">What This Means</div>
+    <p class="hint-text" style="font-size:13px;line-height:1.6;color:#374151">
+      The ESP32 (or the simulator standing in for it) connects to the Python server over a TCP
+      socket and sends a sensor reading every 2 seconds. If the connection drops, the dashboard
+      keeps showing the last known state until it reconnects.
+    </p>
+  </div>
+
+  <div class="card-white span-3">
+    <div class="card-head">Connection History</div>
+    <div class="scroll-log" id="network-log"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='network.js') }}"></script>
+{% endblock %}

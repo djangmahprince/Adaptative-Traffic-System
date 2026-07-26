@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block pagetitle %}Live Control{% endblock %}
+
+{% block content %}
+<div id="emergency-banner">EMERGENCY VEHICLE DETECTED — Lane <span id="emg-lane">A</span> Priority Active</div>
+
+<div class="override-bar">
+  <span class="override-label">Manual Override</span>
+  <select id="override-lane">
+    <option value="A">Lane A — West</option>
+    <option value="B">Lane B — North</option>
+    <option value="C">Lane C — East</option>
+    <option value="D">Lane D — South</option>
+  </select>
+  <button class="btn btn-emergency" id="btn-emergency">Trigger Emergency</button>
+  <button class="btn btn-congestion" id="btn-congestion">Force Congestion</button>
+  <button class="btn btn-reset" id="btn-reset">Reset</button>
+  <span class="override-status" id="override-status"></span>
+</div>
+
+<div class="live-grid">
+  <div class="map-card">
+    <div class="map-card-head">
+      <span class="title">Live Intersection — Digital Twin</span>
+      <span class="synced" id="synced-label">SYNCED · 0 veh/min</span>
+    </div>
+    <div class="map-wrap" id="map-wrap">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" aria-label="Intersection map">
+        <rect width="400" height="400" fill="#3e8e41"/>
+        <circle cx="56" cy="24" r="18" fill="#2f7a33"/>
+        <circle cx="304" cy="28" r="14" fill="#347b38"/>
+        <circle cx="32" cy="312" r="16" fill="#347b38"/>
+        <circle cx="312" cy="320" r="18" fill="#2f7a33"/>
+
+        <rect x="0" y="154" width="400" height="91" fill="#54585f"/>
+        <rect x="154" y="0" width="91" height="400" fill="#54585f"/>
+
+        <rect x="0" y="196" width="154" height="3" fill="#eab308"/>
+        <rect x="0" y="201" width="154" height="3" fill="#eab308"/>
+        <rect x="246" y="196" width="154" height="3" fill="#eab308"/>
+        <rect x="246" y="201" width="154" height="3" fill="#eab308"/>
+        <rect x="196" y="0" width="3" height="154" fill="#eab308"/>
+        <rect x="201" y="0" width="3" height="154" fill="#eab308"/>
+        <rect x="196" y="246" width="3" height="154" fill="#eab308"/>
+        <rect x="201" y="246" width="3" height="154" fill="#eab308"/>
+
+        <g stroke="#fff" stroke-width="2.4" stroke-dasharray="16 14" opacity="0.75">
+          <line x1="0" y1="177" x2="154" y2="177"/>
+          <line x1="246" y1="177" x2="400" y2="177"/>
+          <line x1="0" y1="220" x2="154" y2="220"/>
+          <line x1="246" y1="220" x2="400" y2="220"/>
+          <line x1="177" y1="0" x2="177" y2="154"/>
+          <line x1="177" y1="246" x2="177" y2="400"/>
+          <line x1="220" y1="0" x2="220" y2="154"/>
+          <line x1="220" y1="246" x2="220" y2="400"/>
+        </g>
+
+        <rect x="154" y="154" width="92" height="92" fill="#4a4e56" stroke="rgba(255,255,255,.15)" stroke-width="2"/>
+        <g stroke="#fff" stroke-width="3" stroke-dasharray="9 8" opacity="0.9">
+          <line x1="141" y1="154" x2="141" y2="246"/>
+          <line x1="259" y1="154" x2="259" y2="246"/>
+          <line x1="154" y1="141" x2="246" y2="141"/>
+          <line x1="154" y1="259" x2="246" y2="259"/>
+        </g>
+
+        <g id="signal-badges"></g>
+        <g id="cars-A"></g>
+        <g id="cars-B"></g>
+        <g id="cars-C"></g>
+        <g id="cars-D"></g>
+      </svg>
+    </div>
+  </div>
+
+  <div class="right-col">
+    <div class="stat-grid">
+      <div class="stat-tile"><div class="label">TOTAL VEHICLES</div><div class="value" id="stat-total">—</div></div>
+      <div class="stat-tile"><div class="label">SIGNAL CYCLES</div><div class="value" id="stat-cycles">—</div></div>
+      <div class="stat-tile"><div class="label">AVG WAIT (S)</div><div class="value" id="stat-wait">—</div></div>
+      <div class="stat-tile"><div class="label">LAST UPDATE</div><div class="value small" id="stat-update">—</div></div>
+    </div>
+
+    <div class="card-white">
+      <div class="card-head">AI Decision Status</div>
+      <div class="ai-decision-msg" id="ai-decision-msg">Waiting for first decision…</div>
+      <div class="ai-decision-row"><span>Prediction confidence</span><strong id="ai-confidence">—</strong></div>
+      <div class="ai-decision-row"><span>Throughput</span><strong id="ai-throughput">— veh/min</strong></div>
+      <div class="ai-decision-row"><span>Emergency detected</span><strong id="ai-emergency">NO</strong></div>
+    </div>
+
+    <div id="lane-cards"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>window.__handlesOwnState = true;</script>
+<script src="{{ url_for('static', filename='live.js') }}"></script>
+{% endblock %}
