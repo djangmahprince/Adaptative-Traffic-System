@@ -22,6 +22,7 @@
   <div class="map-card">
     <div class="map-card-head">
       <span class="title">Live Intersection — Digital Twin</span>
+      <span class="phase-chip" id="phase-chip">—</span>
       <span class="synced" id="synced-label">SYNCED · 0 veh/min</span>
     </div>
     <div class="map-wrap" id="map-wrap">
@@ -35,25 +36,33 @@
         <rect x="0" y="154" width="400" height="91" fill="#54585f"/>
         <rect x="154" y="0" width="91" height="400" fill="#54585f"/>
 
-        <rect x="0" y="196" width="154" height="3" fill="#eab308"/>
-        <rect x="0" y="201" width="154" height="3" fill="#eab308"/>
-        <rect x="246" y="196" width="154" height="3" fill="#eab308"/>
-        <rect x="246" y="201" width="154" height="3" fill="#eab308"/>
-        <rect x="196" y="0" width="3" height="154" fill="#eab308"/>
-        <rect x="201" y="0" width="3" height="154" fill="#eab308"/>
-        <rect x="196" y="246" width="3" height="154" fill="#eab308"/>
-        <rect x="201" y="246" width="3" height="154" fill="#eab308"/>
+        <!-- Single solid yellow centerline separating the two directions
+             of travel on each road. -->
+        <rect x="0" y="198" width="154" height="4" fill="#eab308"/>
+        <rect x="246" y="198" width="154" height="4" fill="#eab308"/>
+        <rect x="198" y="0" width="4" height="154" fill="#eab308"/>
+        <rect x="198" y="246" width="4" height="154" fill="#eab308"/>
 
+        <!-- Dashed lane-boundary line splitting each direction's 46-unit
+             carriageway into two real lanes (inner @ ±11.5, outer @ ±34.5
+             from center, per live.js's INNER_OFFSET/OUTER_OFFSET). -->
         <g stroke="#fff" stroke-width="2.4" stroke-dasharray="16 14" opacity="0.75">
           <line x1="0" y1="177" x2="154" y2="177"/>
           <line x1="246" y1="177" x2="400" y2="177"/>
-          <line x1="0" y1="220" x2="154" y2="220"/>
-          <line x1="246" y1="220" x2="400" y2="220"/>
+          <line x1="0" y1="223" x2="154" y2="223"/>
+          <line x1="246" y1="223" x2="400" y2="223"/>
           <line x1="177" y1="0" x2="177" y2="154"/>
           <line x1="177" y1="246" x2="177" y2="400"/>
-          <line x1="220" y1="0" x2="220" y2="154"/>
-          <line x1="220" y1="246" x2="220" y2="400"/>
+          <line x1="223" y1="0" x2="223" y2="154"/>
+          <line x1="223" y1="246" x2="223" y2="400"/>
         </g>
+
+        <!-- Stop lines: solid white bar at each approach, just before the
+             junction box, spanning both lanes of that approach. -->
+        <rect x="149" y="200" width="5" height="46" fill="#fff"/>
+        <rect x="246" y="154" width="5" height="46" fill="#fff"/>
+        <rect x="154" y="149" width="46" height="5" fill="#fff"/>
+        <rect x="200" y="246" width="46" height="5" fill="#fff"/>
 
         <rect x="154" y="154" width="92" height="92" fill="#4a4e56" stroke="rgba(255,255,255,.15)" stroke-width="2"/>
         <g stroke="#fff" stroke-width="3" stroke-dasharray="9 8" opacity="0.9">

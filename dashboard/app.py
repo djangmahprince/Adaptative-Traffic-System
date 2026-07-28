@@ -5,6 +5,9 @@ import server as srv
 
 def create_app():
     app = Flask(__name__)
+    # This is an actively-developed demo project — never let the browser
+    # cache static JS/CSS across a code change without at least revalidating.
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
     @app.route('/')
     def live():

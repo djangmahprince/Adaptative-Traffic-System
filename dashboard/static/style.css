@@ -90,6 +90,12 @@ main { max-width: 1440px; margin: 0 auto; padding: 20px 24px 30px; }
   padding: 10px 18px; border-radius: 10px; margin-bottom: 14px;
   text-align: center; animation: pulseBanner 1.4s ease-in-out infinite;
 }
+/* A requested-but-not-yet-active emergency: calmer, no pulse — the phase
+   is still finishing its current green/yellow/all-red safely. */
+#emergency-banner.banner-pending {
+  background: #3f2d0a; border-color: var(--amber); color: #fde68a;
+  animation: none;
+}
 
 .override-bar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -129,11 +135,19 @@ main { max-width: 1440px; margin: 0 auto; padding: 20px 24px 30px; }
 @media (max-width: 900px) { .live-grid { grid-template-columns: 1fr; } }
 
 .map-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
-.map-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.map-card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 14px; gap: 10px; flex-wrap: wrap;
+}
 .map-card-head .title {
   font-size: 12.5px; font-weight: 800; letter-spacing: 0.06em; color: #c7cfe0; text-transform: uppercase;
 }
 .map-card-head .synced { font: 700 11px var(--font-mono); color: var(--accent); }
+.phase-chip {
+  font: 700 10.5px var(--font-mono); color: var(--muted);
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border);
+  border-radius: 20px; padding: 4px 10px; letter-spacing: 0.03em;
+}
 .map-wrap { position: relative; width: 100%; max-width: 600px; aspect-ratio: 1/1; margin: 0 auto; border-radius: 10px; overflow: hidden; }
 .map-wrap svg { display: block; width: 100%; height: 100%; }
 
