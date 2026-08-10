@@ -38,6 +38,7 @@ import numpy as np
 import threading
 import time
 import os
+import random
 import logging
 from datetime import datetime
 
@@ -62,6 +63,66 @@ ALL_RED_TIME    = 1.5
 
 EMERGENCY_HOLD_SECS      = 15   # how long the emergency lane holds green
 EMERGENCY_COOLDOWN_SECS  = 30   # minimum gap between RFID-triggered requests
+
+# ── Demo scenarios ─────────────────────────────────────────────
+# Same 5 profiles as simulator/esp32_simulator.py's SCENARIOS, ported here
+# so they can run in-process (fed through the exact same update_lane_sensors
+# path a real packet takes) and be switched between with a dashboard click
+# instead of needing a separate terminal running the standalone simulator.
+SCENARIO_POLL_INTERVAL = 2.0
+SCENARIOS = {
+    'morning_rush': {
+        'label': 'Morning Rush',
+        'description': 'Heavy demand on primary corridors (Lanes A & C)',
+        'lanes': {
+            'A': {'count': (7, 11), 'wait': (30, 55)},
+            'B': {'count': (0,  2), 'wait': (0,   9)},
+            'C': {'count': (6, 10), 'wait': (28, 52)},
+            'D': {'count': (0,  2), 'wait': (0,   8)},
+        },
+    },
+    'off_peak': {
+        'label': 'Off-Peak Hours',
+        'description': 'Minimum idle green light allocation',
+        'lanes': {
+            'A': {'count': (0, 2), 'wait': (0, 9)},
+            'B': {'count': (0, 2), 'wait': (0, 8)},
+            'C': {'count': (0, 1), 'wait': (0, 5)},
+            'D': {'count': (0, 2), 'wait': (0, 7)},
+        },
+    },
+    'evening_rush': {
+        'label': 'Evening Rush',
+        'description': 'Multi-lane congestion balance (Lanes B & D)',
+        'lanes': {
+            'A': {'count': (1,  3), 'wait': (3,  14)},
+            'B': {'count': (7, 12), 'wait': (30, 58)},
+            'C': {'count': (1,  3), 'wait': (3,  12)},
+            'D': {'count': (6, 10), 'wait': (26, 50)},
+        },
+    },
+    'emergency': {
+        'label': 'Emergency Mode',
+        'description': 'Immediate Lane A RFID override',
+        'lanes': {
+            'A': {'count': (4, 7), 'wait': (15, 30)},
+            'B': {'count': (3, 5), 'wait': (12, 25)},
+            'C': {'count': (2, 4), 'wait': (8,  18)},
+            'D': {'count': (1, 3), 'wait': (4,  14)},
+        },
+    },
+    'mixed': {
+        'label': 'Mixed Medium Flow',
+        'description': 'Dynamic phase adjustment under balanced load',
+        'lanes': {
+            'A': {'count': (3, 5), 'wait': (11, 24)},
+            'B': {'count': (3, 6), 'wait': (12, 25)},
+            'C': {'count': (3, 5), 'wait': (11, 23)},
+            'D': {'count': (4, 6), 'wait': (14, 25)},
+        },
+    },
+}
+SCENARIO_ORDER = ['morning_rush', 'off_peak', 'evening_rush', 'emergency', 'mixed']
 
 # The phase never varies — only how long each GREEN state lasts.
 PHASE_SEQUENCE = ['NS_GREEN', 'NS_YELLOW', 'NS_ALL_RED', 'EW_GREEN', 'EW_YELLOW', 'EW_ALL_RED']
@@ -118,6 +179,8 @@ shared_state = {
     'source':            None,   # 'simulator' | 'device', from the last packet
     'last_update':       None,
     'last_inference_latency_ms': 0,
+    'active_scenario':   None,   # key into SCENARIOS, or None
+    'scenario_cycle':    0,
 }
 state_lock = threading.Lock()
 
@@ -271,6 +334,73 @@ def apply_manual_override(action, lane=None, level=None):
         return True
 
     return False
+
+
+# ── Demo scenarios — an in-process stand-in for the standalone simulator,
+# so a scenario can be switched with a dashboard click. Generates synthetic
+# packets and feeds them through the exact same update_lane_sensors() path
+# a real ESP32/simulator packet takes; it never touches the phase FSM
+# directly (that's still driven purely by advance_phase_if_due on elapsed
+# wall-clock time, same as always). ──────────────────────────────────────
+
+def _make_scenario_packet(profile, timestamp):
+    pkt = {'timestamp': timestamp, 'emergency': '0', 'source': 'simulator'}
+    for lane in LANES:
+        cfg = profile['lanes'][lane]
+        count = random.randint(*cfg['count'])
+        wait = round(random.uniform(*cfg['wait']), 1)
+        sa = round(max(0, count * random.uniform(0.4, 0.9) + random.gauss(0, 0.2)), 2)
+        pkt[f'lane{lane}_count'] = count
+        pkt[f'lane{lane}_wait'] = wait
+        pkt[f'lane{lane}_activation'] = sa
+    return pkt
+
+
+def start_scenario(name):
+    if name not in SCENARIOS:
+        return False
+    with state_lock:
+        shared_state['active_scenario'] = name
+        shared_state['scenario_cycle'] = 0
+    label = SCENARIOS[name]['label']
+    add_event(f'Scenario started — {label} ({SCENARIOS[name]["description"]})', category='override')
+    if name == 'emergency':
+        # "Immediate Lane A RFID override" — fires the moment this scenario
+        # is selected rather than waiting for a tick, same as a real RFID
+        # tag being scanned. Uses the manual source so it isn't throttled
+        # by the cooldown meant for repeated physical RFID reads.
+        request_emergency('A', source='manual')
+    return True
+
+
+def stop_scenario():
+    with state_lock:
+        was_active = shared_state['active_scenario'] is not None
+        shared_state['active_scenario'] = None
+        shared_state['connected'] = False
+    if was_active:
+        add_event('Scenario stopped — no live feed', category='override')
+    return True
+
+
+def _scenario_ticker():
+    while True:
+        time.sleep(SCENARIO_POLL_INTERVAL)
+        try:
+            with state_lock:
+                name = shared_state['active_scenario']
+            if not name:
+                continue
+            profile = SCENARIOS[name]
+            pkt = _make_scenario_packet(profile, int(time.time()))
+            global _last_packet
+            _last_packet = pkt
+            if _model is not None:
+                update_lane_sensors(_model, pkt)
+            with state_lock:
+                shared_state['scenario_cycle'] += 1
+        except Exception as e:
+            log.error(f"Scenario ticker error: {e}")
 
 
 # ── Phase state machine — the only thing that ever changes a light ───
@@ -429,6 +559,9 @@ def handle_client(conn, addr, model):
     global _last_packet
     log.info(f"ESP32 connected from {addr}")
     add_event(f"ESP32 connected from {addr[0]}", category='connection')
+    # A real device (or the standalone simulator) taking over means synthetic
+    # scenario packets would otherwise keep interleaving with real ones.
+    stop_scenario()
     with state_lock:
         shared_state['connected'] = True
     buffer = ''
@@ -492,6 +625,12 @@ def start_tcp_server(model):
     global _model
     _model = model
     threading.Thread(target=_phase_ticker, daemon=True).start()
+    threading.Thread(target=_scenario_ticker, daemon=True).start()
+
+    # Auto-start a default demo scenario so the dashboard never opens to an
+    # empty intersection just because no ESP32/simulator has connected yet —
+    # a real device connecting (handle_client) stops this automatically.
+    start_scenario('mixed')
 
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -543,6 +682,7 @@ def get_state_snapshot():
             'source':            shared_state['source'],
             'last_update':       shared_state['last_update'],
             'events':            shared_state['events'][:10],
+            'active_scenario':   shared_state['active_scenario'],
         }
 
 
@@ -555,6 +695,13 @@ def get_metrics():
         'cycle_count':    state['cycle_count'],
         'avg_wait_time':  avg_wait_time,
     }
+
+
+def get_scenarios():
+    return [
+        {'key': k, 'label': SCENARIOS[k]['label'], 'description': SCENARIOS[k]['description']}
+        for k in SCENARIO_ORDER
+    ]
 
 
 def get_network_snapshot():

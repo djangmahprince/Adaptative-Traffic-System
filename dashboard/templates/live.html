@@ -4,21 +4,33 @@
 {% block content %}
 <div id="emergency-banner">EMERGENCY VEHICLE DETECTED — Lane <span id="emg-lane">A</span> Priority Active</div>
 
-<div class="override-bar">
-  <span class="override-label">Manual Override</span>
-  <select id="override-lane">
-    <option value="A">Lane A — West</option>
-    <option value="B">Lane B — North</option>
-    <option value="C">Lane C — East</option>
-    <option value="D">Lane D — South</option>
-  </select>
-  <button class="btn btn-emergency" id="btn-emergency">Trigger Emergency</button>
-  <button class="btn btn-congestion" id="btn-congestion">Force Congestion</button>
-  <button class="btn btn-reset" id="btn-reset">Reset</button>
-  <span class="override-status" id="override-status"></span>
-</div>
-
 <div class="live-grid">
+  <!-- Both control panels live in this sidebar, to the left of the
+       animation, so nothing sits above it and the whole intersection is
+       visible without scrolling. -->
+  <div class="left-sidebar">
+    <div class="override-bar">
+      <span class="override-label">Manual Override</span>
+      <select id="override-lane">
+        <option value="A">Lane A — West</option>
+        <option value="B">Lane B — North</option>
+        <option value="C">Lane C — East</option>
+        <option value="D">Lane D — South</option>
+      </select>
+      <button class="btn btn-emergency" id="btn-emergency">Trigger Emergency</button>
+      <button class="btn btn-congestion" id="btn-congestion">Force Congestion</button>
+      <button class="btn btn-reset" id="btn-reset">Reset</button>
+      <span class="override-status" id="override-status"></span>
+    </div>
+
+    <div class="scenario-bar" id="scenario-bar">
+      <span class="override-label">Demo Scenario</span>
+      <!-- Buttons are rendered by live.js from /api/scenarios so the label/
+           description text lives in one place (server.py's SCENARIOS). -->
+      <button class="scenario-btn-stop" id="btn-scenario-stop">Stop Scenario</button>
+    </div>
+  </div>
+
   <div class="map-card">
     <div class="map-card-head">
       <span class="title">Live Intersection — Digital Twin</span>
@@ -33,43 +45,57 @@
         <circle cx="32" cy="312" r="16" fill="#347b38"/>
         <circle cx="312" cy="320" r="18" fill="#2f7a33"/>
 
+        <!-- A/C (horizontal): the wide, two-lane-each-way major road —
+             matches the hardware prototype's 4-road build. -->
         <rect x="0" y="154" width="400" height="91" fill="#54585f"/>
-        <rect x="154" y="0" width="91" height="400" fill="#54585f"/>
+        <!-- B/D (vertical): the narrow, single-lane-each-way minor road —
+             matches the hardware prototype's 2-road build (just a yellow
+             midline, no lane divider). -->
+        <rect x="177" y="0" width="46" height="400" fill="#54585f"/>
 
         <!-- Single solid yellow centerline separating the two directions
              of travel on each road. -->
-        <rect x="0" y="198" width="154" height="4" fill="#eab308"/>
-        <rect x="246" y="198" width="154" height="4" fill="#eab308"/>
+        <rect x="0" y="198" width="177" height="4" fill="#eab308"/>
+        <rect x="223" y="198" width="177" height="4" fill="#eab308"/>
         <rect x="198" y="0" width="4" height="154" fill="#eab308"/>
         <rect x="198" y="246" width="4" height="154" fill="#eab308"/>
 
-        <!-- Dashed lane-boundary line splitting each direction's 46-unit
-             carriageway into two real lanes (inner @ ±11.5, outer @ ±34.5
-             from center, per live.js's INNER_OFFSET/OUTER_OFFSET). -->
+        <!-- Dashed lane-boundary line splitting A/C's 46-unit carriageway
+             into two real lanes (inner @ ±11.5, outer @ ±34.5 from center,
+             per live.js's INNER_OFFSET/OUTER_OFFSET). B/D has none — it's
+             a single lane each way. -->
         <g stroke="#fff" stroke-width="2.4" stroke-dasharray="16 14" opacity="0.75">
-          <line x1="0" y1="177" x2="154" y2="177"/>
-          <line x1="246" y1="177" x2="400" y2="177"/>
-          <line x1="0" y1="223" x2="154" y2="223"/>
-          <line x1="246" y1="223" x2="400" y2="223"/>
-          <line x1="177" y1="0" x2="177" y2="154"/>
-          <line x1="177" y1="246" x2="177" y2="400"/>
-          <line x1="223" y1="0" x2="223" y2="154"/>
-          <line x1="223" y1="246" x2="223" y2="400"/>
+          <line x1="0" y1="177" x2="177" y2="177"/>
+          <line x1="223" y1="177" x2="400" y2="177"/>
+          <line x1="0" y1="223" x2="177" y2="223"/>
+          <line x1="223" y1="223" x2="400" y2="223"/>
         </g>
 
         <!-- Stop lines: solid white bar at each approach, just before the
-             junction box, spanning both lanes of that approach. -->
-        <rect x="149" y="200" width="5" height="46" fill="#fff"/>
-        <rect x="246" y="154" width="5" height="46" fill="#fff"/>
-        <rect x="154" y="149" width="46" height="5" fill="#fff"/>
-        <rect x="200" y="246" width="46" height="5" fill="#fff"/>
+             junction box, spanning that approach's carriageway. -->
+        <rect x="172" y="200" width="5" height="46" fill="#fff"/>
+        <rect x="223" y="154" width="5" height="46" fill="#fff"/>
+        <rect x="177" y="149" width="23" height="5" fill="#fff"/>
+        <rect x="200" y="246" width="23" height="5" fill="#fff"/>
 
-        <rect x="154" y="154" width="92" height="92" fill="#4a4e56" stroke="rgba(255,255,255,.15)" stroke-width="2"/>
+        <!-- Lane watermarks: large, low-opacity letters on each approach's
+             road surface so it's obvious at a glance which physical lane
+             is A/B/C/D (matches the override dropdown / lane cards). -->
+        <g font-family="JetBrains Mono, monospace" font-weight="800" fill="#fff" opacity="0.22" text-anchor="middle" dominant-baseline="central">
+          <text x="75" y="223" font-size="34">A</text>
+          <text x="188.5" y="72" font-size="20">B</text>
+          <text x="325" y="177" font-size="34">C</text>
+          <text x="211.5" y="328" font-size="20">D</text>
+        </g>
+
+        <!-- Junction box: a rectangle, not a square — its width follows
+             B/D's narrow carriageway, its height follows A/C's wide one. -->
+        <rect x="177" y="154" width="46" height="92" fill="#4a4e56" stroke="rgba(255,255,255,.15)" stroke-width="2"/>
         <g stroke="#fff" stroke-width="3" stroke-dasharray="9 8" opacity="0.9">
-          <line x1="141" y1="154" x2="141" y2="246"/>
-          <line x1="259" y1="154" x2="259" y2="246"/>
-          <line x1="154" y1="141" x2="246" y2="141"/>
-          <line x1="154" y1="259" x2="246" y2="259"/>
+          <line x1="164" y1="154" x2="164" y2="246"/>
+          <line x1="236" y1="154" x2="236" y2="246"/>
+          <line x1="177" y1="141" x2="223" y2="141"/>
+          <line x1="177" y1="259" x2="223" y2="259"/>
         </g>
 
         <g id="signal-badges"></g>

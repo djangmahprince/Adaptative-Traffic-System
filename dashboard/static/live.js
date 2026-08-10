@@ -6,36 +6,67 @@ const CONG_COLOR = { Low: '#22c55e', Medium: '#f59e0b', High: '#ef4444' };
 const SIGNAL_COLOR = { GREEN: '#22c55e', YELLOW: '#f59e0b', RED: '#ef4444' };
 
 const MAX_CARS_SHOWN = 8;
-const STOP_T = 0.36;           // fraction of the path where the stop line sits
-const CROSS_T = 0.64;          // fraction where a turning car has finished its curve
+
+// ── Geometry: matches the hardware prototype — lanes A/C (the horizontal
+// road) are a real two-lane-each-way carriageway; lanes B/D (the vertical
+// road) are a single lane each way with just a yellow midline, i.e. a
+// narrower minor road crossing a wider major road. The junction box is
+// therefore a rectangle, not a square: its extent along each axis is set
+// by the OTHER road's width. ──
+const CENTER = { x: 200, y: 200 };
+const BOX_HALF_X = 23;   // half-width of B/D's carriageway → box's X extent
+const BOX_HALF_Y = 46;   // half-width of A/C's carriageway → box's Y extent
+const EDGE_START = 8;
+const EDGE_FINAL = 392;
+const PATH_LEN = EDGE_FINAL - EDGE_START;
+const LANE_DIR_NAME = { A: 'east', B: 'south', C: 'west', D: 'north' };
 
 // ── Vehicle-controller physics. The traffic light is the sole authority
-// over whether a car may cross STOP_T; everything below only decides HOW
-// (smoothly) a car moves within whatever the light + the car ahead allow. ──
-const SAFE_GAP_T = 0.075;      // minimum bumper-to-bumper following gap (t-units)
+// over whether a car may cross the stop line; everything below only
+// decides HOW (smoothly) a car moves within whatever the light + the car
+// ahead allow. ──
+//
+// `car.t` positions the car's CENTER (createCarEl's body rect spans -12 to
+// +12 local units, i.e. a 24-unit-long sprite straddling the origin), but
+// "stop at the line" and "don't overlap the car ahead" are both bumper-to-
+// something rules in real driving — so every distance below is expressed
+// in real units and converted through PATH_LEN (t-units are otherwise unit-
+// less and this conversion was previously skipped, which is why the front
+// bumper used to sail ~10 units past the visual stop line before halting).
+const CAR_LENGTH_T = 24 / PATH_LEN;        // matches the rendered sprite length
+const BUMPER_GAP_T = 10 / PATH_LEN;        // realistic gap, bumper to bumper
+const STOP_LINE_GAP_T = 8 / PATH_LEN;      // realistic gap, front bumper to the painted line
+const SAFE_GAP_T = CAR_LENGTH_T + BUMPER_GAP_T; // center-to-center spacing that yields BUMPER_GAP_T
+const STOP_MARGIN_T = CAR_LENGTH_T / 2 + STOP_LINE_GAP_T; // how far a car's CENTER must stop short of the line
 const EXIT_CLEAR_T = 0.08;     // required clearance in the shared exit lane before entering
 const MAX_SPEED_APPROACH = 0.14; // speed cap while still behind the stop line
 const MAX_SPEED_OPEN = 0.30;     // speed cap once inside/through the intersection
 const ACCEL = 0.45;             // t/s^2 — smooth acceleration
 const DECEL = 0.9;              // t/s^2 — braking (stronger than accel, like a real driver)
-
-// ── Geometry: each direction of travel has TWO real lanes (inner, next to
-// the yellow centerline, and outer, next to the curb) — a real two-lane
-// carriageway each way, like an ordinary urban arterial road. ──
-const CENTER = { x: 200, y: 200 };
-const IH = 46;              // intersection half-width (box spans 154-246)
-const LANE_DIR_NAME = { A: 'east', B: 'south', C: 'west', D: 'north' };
 const DIR_VEC = { east: [1, 0], west: [-1, 0], south: [0, 1], north: [0, -1] };
 const DIR_ANGLE = { east: 0, south: 90, west: 180, north: 270 };
-// Each 46-unit half of the road is split into two 23-unit lanes: inner
-// (adjacent to the yellow centerline) and outer (adjacent to the curb).
-// Lane-boundary dashes in live.html sit exactly at the inner/outer split.
+const WIDE_DIRS = new Set(['east', 'west']); // A & C — two real lanes each way
+
+// A/C's 46-unit-per-direction carriageway is split into two 23-unit lanes:
+// inner (next to the centerline) and outer (next to the curb). B/D only
+// have one 23-unit-wide lane each way, so inner/outer collapse to the same
+// offset there — there is nowhere else for an "outer" lane to be.
 const INNER_OFFSET = { east: 11.5, west: -11.5, south: -11.5, north: 11.5 };
-const OUTER_OFFSET = { east: 34.5, west: -34.5, south: -34.5, north: 34.5 };
+const OUTER_OFFSET = { east: 34.5, west: -34.5, south: -11.5, north: 11.5 };
 const RIGHT_OF = { east: 'south', south: 'west', west: 'north', north: 'east' };
 const LEFT_OF = { east: 'north', north: 'west', west: 'south', south: 'east' };
 const OPPOSING = { A: 'C', C: 'A', B: 'D', D: 'B' };
 const MOVEMENT_PROBS = [['straight', 0.60], ['left', 0.25], ['right', 0.15]];
+
+// Per-axis stop/cross fractions: A/C cross a narrow (46-wide) box quickly;
+// B/D cross a wide (92-wide) box more slowly. Using a single shared
+// fraction for both would put one axis's stop line in the wrong place.
+const STOP_T_X = (CENTER.x - BOX_HALF_X - EDGE_START) / PATH_LEN;
+const CROSS_T_X = (CENTER.x + BOX_HALF_X - EDGE_START) / PATH_LEN;
+const STOP_T_Y = (CENTER.y - BOX_HALF_Y - EDGE_START) / PATH_LEN;
+const CROSS_T_Y = (CENTER.y + BOX_HALF_Y - EDGE_START) / PATH_LEN;
+function stopTFor(dir) { return WIDE_DIRS.has(dir) ? STOP_T_X : STOP_T_Y; }
+function crossTFor(dir) { return WIDE_DIRS.has(dir) ? CROSS_T_X : CROSS_T_Y; }
 
 function crossAxisCoord(dir, side) { return 200 + (side === 'inner' ? INNER_OFFSET[dir] : OUTER_OFFSET[dir]); }
 function pointAtMain(dir, mainVal, side) {
@@ -44,32 +75,62 @@ function pointAtMain(dir, mainVal, side) {
 }
 function mainCoordAtEdgeStart(dir) {
   const [dx, dy] = DIR_VEC[dir];
-  if (dx === 1 || dy === 1) return 8;
-  return 392;
+  if (dx === 1 || dy === 1) return EDGE_START;
+  return EDGE_FINAL;
 }
 function mainCoordAtFinalEdge(dir) {
   const [dx, dy] = DIR_VEC[dir];
-  if (dx === 1 || dy === 1) return 392;
-  return 8;
+  if (dx === 1 || dy === 1) return EDGE_FINAL;
+  return EDGE_START;
 }
 function mainCoordAtStopLine(dir) {
   const [dx, dy] = DIR_VEC[dir];
-  if (dx === 1) return CENTER.x - IH;
-  if (dx === -1) return CENTER.x + IH;
-  if (dy === 1) return CENTER.y - IH;
-  return CENTER.y + IH;
+  if (dx === 1) return CENTER.x - BOX_HALF_X;
+  if (dx === -1) return CENTER.x + BOX_HALF_X;
+  if (dy === 1) return CENTER.y - BOX_HALF_Y;
+  return CENTER.y + BOX_HALF_Y;
 }
 function mainCoordAtExitEntry(dir) {
   const [dx, dy] = DIR_VEC[dir];
-  if (dx === 1) return CENTER.x + IH;
-  if (dx === -1) return CENTER.x - IH;
-  if (dy === 1) return CENTER.y + IH;
-  return CENTER.y - IH;
+  if (dx === 1) return CENTER.x + BOX_HALF_X;
+  if (dx === -1) return CENTER.x - BOX_HALF_X;
+  if (dy === 1) return CENTER.y + BOX_HALF_Y;
+  return CENTER.y - BOX_HALF_Y;
 }
 function lerp(a, b, f) { return a + (b - a) * f; }
 function bezierPoint(p0, p1, p2, u) {
   const mu = 1 - u;
   return { x: mu * mu * p0.x + 2 * mu * u * p1.x + u * u * p2.x, y: mu * mu * p0.y + 2 * mu * u * p1.y + u * u * p2.y };
+}
+
+/** Left turns sweep through the middle of the box (a real permissive left
+ * does this — hence the opposing-straight yield check). A right turn, by
+ * contrast, hugs a tight curb radius at the near corner and never goes
+ * near the box's center at all. Using the same CENTER control point for
+ * both (as before) made right turns bow unrealistically far into the
+ * middle of the box — the same space left turns and opposing traffic use
+ * — which is what let them visually intersect. This computes the near
+ * corner from the origin's stop line and the exit's entry line, which are
+ * always on perpendicular axes for a turn. */
+const LEFT_TURN_BOW = 12; // how far a left turn's curve bows off dead-center
+function turnControlPoint(originDir, exitDir, movement) {
+  if (movement === 'right') {
+    const originIsX = DIR_VEC[originDir][0] !== 0;
+    const stopCoord = mainCoordAtStopLine(originDir);
+    const exitCoord = mainCoordAtExitEntry(exitDir);
+    return originIsX ? { x: stopCoord, y: exitCoord } : { x: exitCoord, y: stopCoord };
+  }
+  // Two opposing approaches both green at once (e.g. B & D) can each have a
+  // left-turner in flight simultaneously — real intersections handle this
+  // because each driver keeps to their own right of the meeting point, so
+  // the two curves bow to opposite sides of center instead of crossing
+  // through the exact same point. Bowing by the origin direction's
+  // right-hand perpendicular reproduces that: it's opposite in sign for a
+  // direction and its opposite (e.g. south vs north), so opposing lefts
+  // separate automatically.
+  const [dx, dy] = DIR_VEC[originDir];
+  const [px, py] = [dy, -dx]; // rotate 90° — the driver's own right-hand side
+  return { x: CENTER.x + px * LEFT_TURN_BOW, y: CENTER.y + py * LEFT_TURN_BOW };
 }
 
 function pickMovement() {
@@ -92,6 +153,8 @@ function carPositionAndAngle(car, t) {
   const originDir = LANE_DIR_NAME[car.lane];
   const straight = car.movement === 'straight';
   const side = car.laneSide;
+  const stopT = stopTFor(originDir);
+  const crossT = crossTFor(originDir);
 
   if (straight) {
     const m0 = mainCoordAtEdgeStart(originDir);
@@ -99,24 +162,25 @@ function carPositionAndAngle(car, t) {
     return { pos: pointAtMain(originDir, lerp(m0, m1, t), side), angle: DIR_ANGLE[originDir] };
   }
 
-  if (t <= STOP_T) {
+  if (t <= stopT) {
     const m0 = mainCoordAtEdgeStart(originDir);
     const m1 = mainCoordAtStopLine(originDir);
-    return { pos: pointAtMain(originDir, lerp(m0, m1, t / STOP_T), side), angle: DIR_ANGLE[originDir] };
+    return { pos: pointAtMain(originDir, lerp(m0, m1, t / stopT), side), angle: DIR_ANGLE[originDir] };
   }
 
-  if (t <= CROSS_T) {
-    const u = (t - STOP_T) / (CROSS_T - STOP_T);
+  if (t <= crossT) {
+    const u = (t - stopT) / (crossT - stopT);
     const p0 = pointAtMain(originDir, mainCoordAtStopLine(originDir), side);
     const p2 = pointAtMain(car.exitDir, mainCoordAtExitEntry(car.exitDir), side);
+    const control = turnControlPoint(originDir, car.exitDir, car.movement);
     const delta = car.movement === 'right' ? 90 : -90;
-    return { pos: bezierPoint(p0, CENTER, p2, u), angle: DIR_ANGLE[originDir] + delta * u };
+    return { pos: bezierPoint(p0, control, p2, u), angle: DIR_ANGLE[originDir] + delta * u };
   }
 
   const m0 = mainCoordAtExitEntry(car.exitDir);
   const m1 = mainCoordAtFinalEdge(car.exitDir);
-  const u = (t - CROSS_T) / (1 - CROSS_T);
-  return { pos: pointAtMain(car.exitDir, lerp(m0, m1, u)), angle: DIR_ANGLE[car.exitDir] };
+  const u = (t - crossT) / (1 - crossT);
+  return { pos: pointAtMain(car.exitDir, lerp(m0, m1, u), side), angle: DIR_ANGLE[car.exitDir] };
 }
 
 const animCars = { A: [], B: [], C: [], D: [] };
@@ -137,7 +201,10 @@ function svgEl(name, attrs) {
 function buildSignalBadges() {
   const g = document.getElementById('signal-badges');
   g.innerHTML = '';
-  const POS = { A: { x: 146, y: 146 }, B: { x: 254, y: 146 }, C: { x: 254, y: 254 }, D: { x: 146, y: 254 } };
+  // Positioned just outside each corner of the (now rectangular) box.
+  const bx0 = CENTER.x - BOX_HALF_X - 8, bx1 = CENTER.x + BOX_HALF_X + 8;
+  const by0 = CENTER.y - BOX_HALF_Y - 8, by1 = CENTER.y + BOX_HALF_Y + 8;
+  const POS = { A: { x: bx0, y: by0 }, B: { x: bx1, y: by0 }, C: { x: bx1, y: by1 }, D: { x: bx0, y: by1 } };
   LANES.forEach((lane) => {
     const { x, y } = POS[lane];
     const group = svgEl('g', {});
@@ -215,26 +282,47 @@ function placeCar(car) {
  * rules (no protected arrow, no dedicated turn lane). */
 function opposingStraightPresent(lane) {
   const opp = OPPOSING[lane];
-  return animCars[opp].some((c) => c.movement === 'straight' && c.t > STOP_T - 0.03 && c.t < CROSS_T + 0.05);
+  const dir = LANE_DIR_NAME[opp]; // always the same axis as `lane` — A<->C, B<->D
+  const stopT = stopTFor(dir), crossT = crossTFor(dir);
+  return animCars[opp].some((c) => c.movement === 'straight' && c.t > stopT - 0.03 && c.t < crossT + 0.05);
 }
 
-/** Rule 7 / "don't block the box": before a car may cross the stop line,
- * check the SHARED exit lane it is heading for (every origin lane feeding
- * the same exitDir funnels into one outgoing lane, per spec). If another
- * car is still sitting right at that exit's entry point, hold this car
- * back rather than let it enter the intersection with nowhere to go. */
+/** Rule 7 / "don't block the box" — and the actual fix for cross-traffic
+ * intersecting mid-box: reserve a car's exit lane for the car's WHOLE
+ * transit, not just the tail end of it. Every green phase runs two
+ * approaches at once (e.g. A & C), and each has a right-turner whose exit
+ * is the SAME shared lane an opposing left-turner is heading for (A-right
+ * and C-left both feed B; A-left and C-right both feed D, etc). Right
+ * turns don't yield to opposing straight traffic like left turns do, and
+ * the old version of this check only looked at cars already PAST their
+ * curve — so two cars from different approaches could both be mid-curve,
+ * converging on the same exit, at the same time. Blocking entry for as
+ * long as any OTHER-lane car is anywhere between committing to enter and
+ * clearing the exit closes that gap: only one car (per exit/lane-side)
+ * is ever mid-transit toward a given exit. Same-lane traffic is excluded
+ * — that's already governed by the ordinary following-distance chain and
+ * would otherwise get double-gated for no reason. */
 function isExitLaneBlocked(car) {
-  let minT = Infinity;
+  // B/D's exit has only one physical lane, so ANY car heading there counts
+  // regardless of nominal laneSide; A/C's exit has two, so only the
+  // matching sub-lane counts.
+  const exitIsWide = WIDE_DIRS.has(car.exitDir);
+  let blocked = false;
   LANES.forEach((l) => {
+    if (blocked || l === car.lane) return;
     animCars[l].forEach((c) => {
-      if (c === car) return;
-      if (c.exitDir !== car.exitDir || c.laneSide !== car.laneSide) return;
-      if (c.t < CROSS_T) return;
-      minT = Math.min(minT, c.t);
+      if (blocked) return;
+      if (c.exitDir !== car.exitDir) return;
+      if (exitIsWide && c.laneSide !== car.laneSide) return;
+      const cOriginDir = LANE_DIR_NAME[c.lane];
+      const cFrontCommitT = stopTFor(cOriginDir) - CAR_LENGTH_T / 2;
+      const cCrossT = crossTFor(cOriginDir);
+      if (c.t < cFrontCommitT) return; // hasn't committed to entering yet
+      if (c.t >= cCrossT + EXIT_CLEAR_T) return; // fully clear of the merge zone
+      blocked = true;
     });
   });
-  if (minT === Infinity) return false;
-  return (minT - CROSS_T) < EXIT_CLEAR_T;
+  return blocked;
 }
 
 /** Safe-stopping-distance speed cap: the faster a car is allowed to go,
@@ -253,8 +341,19 @@ function speedCapForGap(gap) {
  * make a car's ceiling MORE restrictive; nothing here can move a car past
  * a red/yellow stop line or through a car ahead of it. */
 function updateCarState(car, leaderT, lane, signal, dt) {
-  const beforeStop = car.t < STOP_T - 0.002;
-  const inIntersection = car.t >= STOP_T && car.t < CROSS_T;
+  const originDir = LANE_DIR_NAME[lane];
+  const stopT = stopTFor(originDir);
+  const crossT = crossTFor(originDir);
+  // frontCommitT: once the car's FRONT BUMPER (center + half its length)
+  // reaches the physical stop line, it is committed and must never be
+  // re-gated (requirement 8 — already-crossed cars finish safely).
+  // stopCeilingT: where a BLOCKED car's center actually halts — set back
+  // far enough that its front bumper stops short of the line by a small,
+  // realistic gap (requirement 2), not sitting on top of it.
+  const frontCommitT = stopT - CAR_LENGTH_T / 2;
+  const stopCeilingT = stopT - STOP_MARGIN_T;
+  const beforeStop = car.t < frontCommitT;
+  const inIntersection = car.t >= frontCommitT && car.t < crossT;
 
   let mustHoldAtLine = false;
   let canEnter = true;
@@ -267,33 +366,42 @@ function updateCarState(car, leaderT, lane, signal, dt) {
     mustHoldAtLine = !canEnter;
   }
 
-  const followGap = isFinite(leaderT) ? (leaderT - car.t) : Infinity;
   const followCeiling = isFinite(leaderT) ? leaderT - SAFE_GAP_T : Infinity;
-  const lineCeiling = mustHoldAtLine ? STOP_T - 0.004 : Infinity;
+  const lineCeiling = mustHoldAtLine ? stopCeilingT : Infinity;
   const ceiling = Math.min(followCeiling, lineCeiling);
 
+  // Smoothly bring the car's speed toward zero as it nears whichever
+  // ceiling binds (stop line or car ahead) — this is what makes braking
+  // begin naturally well before the stop line rather than an abrupt halt
+  // right at it (requirement 3).
   const distToCeiling = Math.max(0, ceiling - car.t);
   const speedCap = isFinite(ceiling) ? speedCapForGap(distToCeiling) : Infinity;
-  const cruiseCap = (inIntersection || car.t >= CROSS_T) ? MAX_SPEED_OPEN : MAX_SPEED_APPROACH;
+  const cruiseCap = (inIntersection || car.t >= crossT) ? MAX_SPEED_OPEN : MAX_SPEED_APPROACH;
   const targetSpeed = Math.min(cruiseCap, speedCap);
 
   if (car.v < targetSpeed) car.v = Math.min(targetSpeed, car.v + ACCEL * dt);
   else car.v = Math.max(targetSpeed, car.v - DECEL * dt);
 
   const nextT = car.t + car.v * dt;
+  // Hard clamp: whatever the speed model computes, the car's position this
+  // frame can never exceed the ceiling — this is the actual guarantee that
+  // a blocked car's front bumper never reaches, let alone crosses, the
+  // stop line, regardless of dt size or approach speed.
   car.t = isFinite(ceiling) ? Math.min(nextT, ceiling) : nextT;
 
   // State label for diagnostics/architecture clarity — movement math above
   // is entirely gap/ceiling driven and does not depend on this value.
-  if (car.t >= CROSS_T) car.state = 'EXITING';
-  else if (car.t >= STOP_T) car.state = 'TURNING';
-  else if (mustHoldAtLine) car.state = (followGap < (STOP_T - car.t)) ? 'QUEUED' : 'WAITING';
+  if (car.t >= crossT) car.state = 'EXITING';
+  else if (car.t >= frontCommitT) car.state = 'TURNING';
+  else if (mustHoldAtLine) car.state = (followCeiling < lineCeiling) ? 'QUEUED' : 'WAITING';
   else car.state = car.v < 0.015 ? 'STOPPING' : 'MOVING';
 }
 
 function stepLane(lane, dt) {
   const signal = laneSignal[lane];
   const target = laneTarget[lane];
+  const originDir = LANE_DIR_NAME[lane];
+  const frontCommitT = stopTFor(originDir) - CAR_LENGTH_T / 2;
   let list = animCars[lane];
 
   const beforeExit = list.filter((c) => c.t < 0.95).length;
@@ -303,11 +411,15 @@ function stepLane(lane, dt) {
     list = animCars[lane];
   }
 
-  // Cars in the inner and outer lanes sit side-by-side, not nose-to-tail —
-  // each sub-lane is its own independent following-chain so a car in one
-  // lane is never artificially blocked by a car ahead in the other lane.
-  ['inner', 'outer'].forEach((side) => {
-    const group = list.filter((c) => c.laneSide === side).sort((a, b) => b.t - a.t);
+  // A/C have two real lanes side-by-side, not nose-to-tail — each sub-lane
+  // is its own independent following-chain so a car in one lane is never
+  // artificially blocked by a car ahead in the other lane. B/D only have
+  // one physical lane each way, so ALL of a lane's cars share a single
+  // following-chain regardless of their nominal laneSide.
+  const sides = WIDE_DIRS.has(originDir) ? ['inner', 'outer'] : ['single'];
+  sides.forEach((side) => {
+    const group = (side === 'single' ? list.slice() : list.filter((c) => c.laneSide === side))
+      .sort((a, b) => b.t - a.t);
     // Snapshot pre-frame positions so every car reacts to where the vehicle
     // ahead of it WAS at the start of this tick, not where it just moved to
     // a moment ago in this same pass — otherwise gap-opening propagates
@@ -326,7 +438,7 @@ function stepLane(lane, dt) {
   list = animCars[lane];
   const canCross = signal === 'GREEN';
   if (!canCross) {
-    const kept = list.filter((c) => c.t < STOP_T + 0.02);
+    const kept = list.filter((c) => c.t < frontCommitT + 0.02);
     while (kept.length > target) {
       kept.sort((a, b) => a.t - b.t);
       const victim = kept[0];
@@ -435,6 +547,62 @@ document.getElementById('btn-reset').addEventListener('click', () => {
   sendOverride({ action: 'reset' });
 });
 
+let activeScenario = null;
+
+async function sendScenario(body) {
+  try {
+    const res = await fetch('/api/scenario', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setOverrideStatus(err.error || 'Request failed', 'error');
+      return;
+    }
+    setOverrideStatus('Applied', 'ok');
+  } catch {
+    setOverrideStatus('Server unreachable', 'error');
+  }
+}
+
+function highlightActiveScenario() {
+  document.querySelectorAll('.scenario-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.key === activeScenario);
+  });
+}
+
+/** Scenario buttons are built from /api/scenarios (server.py's SCENARIOS is
+ * the single source of truth for the label/description text) rather than
+ * duplicated here — click one to switch, no separate terminal needed. */
+async function buildScenarioButtons() {
+  try {
+    const res = await fetch('/api/scenarios');
+    const { scenarios } = await res.json();
+    const bar = document.getElementById('scenario-bar');
+    const stopBtn = document.getElementById('btn-scenario-stop');
+    scenarios.forEach((s) => {
+      const btn = document.createElement('button');
+      btn.className = 'scenario-btn';
+      btn.dataset.key = s.key;
+      btn.innerHTML = `${s.label}<span class="desc">${s.description}</span>`;
+      btn.addEventListener('click', () => {
+        activeScenario = s.key; // optimistic; poll() reconciles with the server
+        highlightActiveScenario();
+        sendScenario({ action: 'start', name: s.key });
+      });
+      bar.insertBefore(btn, stopBtn);
+    });
+  } catch (err) {
+    console.warn('failed to load scenarios', err);
+  }
+}
+
+document.getElementById('btn-scenario-stop').addEventListener('click', () => {
+  activeScenario = null;
+  highlightActiveScenario();
+  sendScenario({ action: 'stop' });
+});
+
 async function poll() {
   try {
     const [stateRes, metricsRes] = await Promise.all([fetch('/api/state'), fetch('/api/metrics')]);
@@ -455,6 +623,11 @@ async function poll() {
       banner.style.display = 'none';
     }
     emergencyLane = state.emergency ? state.emergency_lane : null;
+
+    if (activeScenario !== state.active_scenario) {
+      activeScenario = state.active_scenario;
+      highlightActiveScenario();
+    }
 
     LANES.forEach((l) => {
       laneSignal[l] = state.lanes[l].signal;
@@ -499,6 +672,7 @@ async function poll() {
 }
 
 buildSignalBadges();
+buildScenarioButtons();
 poll();
 setInterval(poll, 1000);
 requestAnimationFrame(animLoop);

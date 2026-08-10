@@ -79,4 +79,23 @@ def create_app():
             return jsonify({'error': 'unknown action'}), 400
         return jsonify({'ok': True})
 
+    @app.route('/api/scenarios')
+    def api_scenarios():
+        return jsonify({'scenarios': srv.get_scenarios()})
+
+    @app.route('/api/scenario', methods=['POST'])
+    def api_scenario():
+        body = request.get_json(force=True, silent=True) or {}
+        action = body.get('action')
+        name = body.get('name')
+        if action == 'start':
+            if name not in srv.SCENARIOS:
+                return jsonify({'error': 'unknown scenario'}), 400
+            srv.start_scenario(name)
+            return jsonify({'ok': True})
+        if action == 'stop':
+            srv.stop_scenario()
+            return jsonify({'ok': True})
+        return jsonify({'error': 'unknown action'}), 400
+
     return app

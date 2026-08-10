@@ -1,632 +1,678 @@
 // ============================================================
-//  AI Traffic Control System
-//  File: firmware/traffic_controller/traffic_controller.ino
-//  Board: ESP32-WROOM-32
+//  AI TRAFFIC CONTROL SYSTEM — ESP32 FIRMWARE
+//  KNUST Department of Computer Engineering
 //
-//  Modules:
-//    - HC-SR04 ultrasonic sensors (4 lanes)
-//    - RC522 RFID reader (emergency detection)
-//    - LED traffic signals (4 lanes × 3 LEDs)
-//    - Wi-Fi + TCP client (mobile hotspot)
-//    - JSON packet formatting & parsing
+//  Speaks the protocol in server/server.py:
+//    - raw TCP to port 5050, newline-delimited JSON
+//    - sends  laneX_count / laneX_wait / laneX_activation  per lane
+//    - receives laneX_signal (RED/YELLOW/GREEN) and applies it
 //
-//  Flow (every 2 seconds):
-//    1. Poll all 4 HC-SR04 sensors
-//    2. Check RC522 for RFID tag
-//    3. Build JSON packet
-//    4. Send to Python server via TCP
-//    5. Receive timing instructions
-//    6. Update LED signals per lane
+//  DIVISION OF RESPONSIBILITY
+//    The SERVER owns the phase sequence. It decides which lanes are
+//    green and for how long, on its own wall-clock ticker. This board
+//    reports what the sensors see and drives the lamps it is told to.
+//    It only runs its own phase logic if the server is unreachable.
+//
+//  LANE GEOMETRY (must match server PHASE_LANES)
+//    Lane A = West    Lane C = East    -> served together (EW phase)
+//    Lane B = North   Lane D = South   -> served together (NS phase)
+//
+//    Opposing approaches run together because their movements do not
+//    conflict. Lanes are driven individually here, so the pairing is
+//    the server's decision, not a wiring assumption.
 // ============================================================
 
 #include <WiFi.h>
 #include <ArduinoJson.h>
-#include <SPI.h>
-#include <MFRC522.h>
+
+// RFID stays off until its SPI pins are freed. See notes at end.
+#define ENABLE_RFID 0
+
+#if ENABLE_RFID
+  #include <SPI.h>
+  #include <MFRC522.h>
+  #define RFID_SS   5
+  #define RFID_RST  22
+  MFRC522 rfid(RFID_SS, RFID_RST);
+#endif
+
 
 // ============================================================
-//  SECTION 1 — CONFIGURATION
-//  Edit WIFI_SSID, WIFI_PASS, SERVER_IP before uploading
+//  NETWORK
 // ============================================================
 
-// ── Wi-Fi (use your mobile hotspot credentials) ────────────
-const char* WIFI_SSID = "YOUR_HOTSPOT_NAME";
-const char* WIFI_PASS = "YOUR_HOTSPOT_PASSWORD";
+const char* WIFI_SSID     = "YOUR_WIFI_NAME";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
-// ── Python server (run ipconfig on Windows to find hotspot IP)
-const char* SERVER_IP   = "192.168.x.x";  // Replace with your laptop's IP
-const int   SERVER_PORT = 5050;
+const char* SERVER_HOST = "192.168.1.100";   // laptop running run.py
+const int   SERVER_PORT = 5050;              // matches server.py PORT
 
-// ── Polling interval (must match server expectation) ────────
-const unsigned long POLL_INTERVAL_MS = 2000;
+const unsigned long SEND_INTERVAL     = 2000;   // ms between packets
+const unsigned long RECONNECT_BACKOFF = 3000;
+const unsigned long LINK_TIMEOUT      = 6000;   // no reply for this long = offline
 
-// ============================================================
-//  SECTION 2 — LED GPIO PIN DEFINITIONS (Audited & Verified)
-//  All pins confirmed safe for output on ESP32-WROOM-32
-//  GPIO 5 avoided (strapping pin)
-// ============================================================
-
-// Lane A — Left (West) approach
-#define LANE_A_RED    14
-#define LANE_A_AMBER  27
-#define LANE_A_GREEN  26
-
-// Lane B — Top (North) approach
-#define LANE_B_RED    25
-#define LANE_B_AMBER  33
-#define LANE_B_GREEN  32
-
-// Lane C — Right (East) approach
-#define LANE_C_RED    19
-#define LANE_C_AMBER  18
-#define LANE_C_GREEN  23   // NOTE: GPIO 23, NOT GPIO 5 (strapping pin)
-
-// Lane D — Bottom (South) approach
-#define LANE_D_RED    17
-#define LANE_D_AMBER  16
-#define LANE_D_GREEN   4
 
 // ============================================================
-//  SECTION 3 — HC-SR04 SENSOR PIN DEFINITIONS
-//  TRIG: 3.3V output — safe to connect directly
-//  ECHO: 5V output  — MUST go through 1KΩ + 2KΩ voltage divider
-//  Strapping pin TRIGs (GPIO 15, 2, 12) need 10KΩ pull-up to 3.3V
+//  PIN MAP — verified working build, do not change casually
 // ============================================================
 
-#define TRIG_A  13    // Safe output pin
-#define ECHO_A  34    // Input-only — ideal for ECHO
+const int NUM_LANES = 4;
+const char* LANE_ID[NUM_LANES] = { "A", "B", "C", "D" };
 
-#define TRIG_B  15    // Strapping pin — 10KΩ pull-up to 3.3V required
-#define ECHO_B  35    // Input-only — ideal for ECHO
+//                                   A    B    C    D
+const int TRIG_PIN[NUM_LANES]  = {  25,  26,  27,  14 };
+const int ECHO_PIN[NUM_LANES]  = {  34,  35,  32,  33 };
 
-#define TRIG_C   2    // Strapping pin — 10KΩ pull-up to 3.3V required
-#define ECHO_C  36    // Input-only — ideal for ECHO
+const int RED_PIN[NUM_LANES]   = {   4,  23,  18,  21 };
+const int GREEN_PIN[NUM_LANES] = {   5,  22,  19,  13 };
 
-#define TRIG_D  12    // Strapping pin — 10KΩ pull-up to 3.3V required
-#define ECHO_D  39    // Input-only — ideal for ECHO
-
-// ── Sensor config ────────────────────────────────────────────
-const float  SOUND_SPEED_CM_US = 0.0343;  // cm per microsecond
-const float  VEHICLE_THRESHOLD_CM = 30.0; // Distance below = vehicle present
-const int    SENSOR_READINGS    = 5;       // Readings per poll (averaged)
-const unsigned long SENSOR_TIMEOUT_US = 25000; // 25ms timeout (~4m max)
 
 // ============================================================
-//  SECTION 4 — RC522 RFID PIN DEFINITIONS
-//  RC522 VCC = 3.3V ONLY (not 5V)
-//  GPIO 3 (MISO) is also UART RX0 — Serial.end() called in setup
+//  DETECTION AND WINDOWING
 // ============================================================
 
-#define RFID_SS_PIN   21   // SDA / Chip Select
-#define RFID_SCK_PIN  22   // SCK
-#define RFID_MOSI_PIN  0   // MOSI (strapping pin — handle carefully)
-#define RFID_MISO_PIN  3   // MISO (also UART RX0)
-#define RFID_RST_PIN  13   // RST  (shared with TRIG_A — managed in code)
+const float DETECTION_DISTANCE = 20.0;    // cm — vehicle present below this
+const float MIN_VALID_CM       = 2.0;
+const float MAX_VALID_CM       = 400.0;
 
-// ── Emergency vehicle RFID tag UIDs ──────────────────────────
-// Add the UID bytes of your actual MIFARE tags here
-// Read them using the DumpInfo example in MFRC522 library
-const byte EMERGENCY_TAG_1[] = {0xDE, 0xAD, 0xBE, 0xEF};
-const byte EMERGENCY_TAG_2[] = {0x01, 0x02, 0x03, 0x04};
-const int  TAG_SIZE = 4;
+const unsigned long SAMPLE_INTERVAL = 120;    // ms between single-lane samples
+const unsigned long PULSE_TIMEOUT   = 30000;  // us
+
+const int MEDIAN_WINDOW = 3;
+const int CLEAR_SAMPLES = 3;     // consecutive clears before counting a new arrival
+const int OCC_WINDOW    = 25;    // samples ≈ 12 s, matching the model's activation range
+
+// Each lane is sampled every NUM_LANES * SAMPLE_INTERVAL ms.
+const float SAMPLE_PERIOD_S = (SAMPLE_INTERVAL * NUM_LANES) / 1000.0;
+
+// Queue estimation
+const int           QUEUE_MAX       = 15;     // matches the dashboard's render cap
+const unsigned long QUEUE_FLUSH_MS  = 2500;   // clear-on-green before declaring empty
+const float         ACTIVATION_PER_VEHICLE = 0.7;   // dataset uses count x 0.3-0.9
+
+// Local fallback timings, used only when the server is unreachable.
+const unsigned long FB_GREEN_LOW    = 12000;
+const unsigned long FB_GREEN_MEDIUM = 20000;
+const unsigned long FB_GREEN_HIGH   = 35000;
+const unsigned long FB_YELLOW       = 3000;
+const unsigned long FB_ALL_RED      = 1500;
+
 
 // ============================================================
-//  SECTION 5 — GLOBAL STATE
+//  LANE STATE
 // ============================================================
 
-WiFiClient   tcpClient;
-MFRC522      rfid(RFID_SS_PIN, RFID_RST_PIN);
+struct Lane {
+  float raw[MEDIAN_WINDOW];
+  int   rawIdx, rawFilled;
 
-// Per-lane sensor state
-struct LaneState {
-  float   lastDistance;
-  int     vehicleCount;
-  float   waitTime;
-  float   sensorActivation;
-  int     consecutiveDetections;
-  float   distanceHistory[SENSOR_READINGS];
-  int     historyIndex;
+  float distance;
+  bool  present;
+  bool  armed;
+  int   clearRun;
+
+  int   count;            // debounced arrival events since last packet
+  bool  occ[OCC_WINDOW];
+  int   occIdx, occFilled;
+
+  unsigned long presentSince;
+  unsigned long waitAccum;
+
+  // ---- queue estimate ----
+  // The dataset defines vehicle_count as "estimated vehicles in lane"
+  // (0-2 low, 3-5 medium, 6+ high), i.e. a standing queue rather than a
+  // flow rate. A single presence sensor cannot measure queue length
+  // directly, so it is integrated from arrivals and departures.
+  int   queue;
+  unsigned long clearSince;   // millis the lane has read clear on green
+
+  char  signal[8];        // RED / YELLOW / GREEN as sent by the server
+  int   greenRemaining;
 };
 
-LaneState lanes[4];  // Index: 0=A, 1=B, 2=C, 3=D
+Lane lanes[NUM_LANES];
 
-// LED pins grouped per lane [RED, AMBER, GREEN]
-const int LED_PINS[4][3] = {
-  {LANE_A_RED, LANE_A_AMBER, LANE_A_GREEN},
-  {LANE_B_RED, LANE_B_AMBER, LANE_B_GREEN},
-  {LANE_C_RED, LANE_C_AMBER, LANE_C_GREEN},
-  {LANE_D_RED, LANE_D_AMBER, LANE_D_GREEN},
-};
+int activeLane = 0;
+unsigned long lastSampleAt = 0;
+unsigned long lastSendAt   = 0;
+unsigned long lastReplyAt  = 0;
+unsigned long lastConnectTry = 0;
 
-// Sensor pins grouped per lane [TRIG, ECHO]
-const int SENSOR_PINS[4][2] = {
-  {TRIG_A, ECHO_A},
-  {TRIG_B, ECHO_B},
-  {TRIG_C, ECHO_C},
-  {TRIG_D, ECHO_D},
-};
+WiFiClient client;
+String rxBuffer = "";
 
-// Current signal state per lane: 0=RED, 1=AMBER, 2=GREEN
-int  signalState[4]    = {0, 0, 0, 0};
-int  greenTimeSec[4]   = {10, 10, 10, 10};  // Default Low congestion
+bool serverLinked   = false;
+bool emergencyFlag  = false;     // set by RFID, cleared once acknowledged
+String lastTagId    = "";
 
-// ── Two-phase signal logic ────────────────────────────────────
-// Phase 0: Lanes A(0)+C(2) GREEN simultaneously — horizontal road
-// Phase 1: Lanes B(1)+D(3) GREEN simultaneously — vertical road
-// This matches real intersection operation: opposing lanes move
-// together; perpendicular roads are always stopped.
-int  currentPhase      = 0;    // 0 = A+C active, 1 = B+D active
-const int PHASE_LANES[2][2] = {{0, 2}, {1, 3}};  // Lane indices per phase
+// Fallback FSM
+enum FbState { FB_EW_GREEN, FB_EW_YELLOW, FB_EW_RED, FB_NS_GREEN, FB_NS_YELLOW, FB_NS_RED };
+FbState fbState = FB_NS_RED;
+unsigned long fbStateStart = 0;
+unsigned long fbStateDur   = FB_ALL_RED;
 
-// Emergency flag
-bool     emergencyActive = false;
-String   emergencyTagUID = "";
-unsigned long emergencyStartMs = 0;
-const unsigned long EMERGENCY_HOLD_MS = 15000;   // 15 seconds
-const unsigned long EMERGENCY_COOLDOWN_MS = 30000; // 30 seconds
-unsigned long lastEmergencyMs = 0;
+unsigned long yellowBlinkAt = 0;
+bool yellowBlinkOn = false;
 
-// Timing
-unsigned long lastPollMs    = 0;
-unsigned long lastCycleMs   = 0;
-int           activeLane    = 0;     // Lane currently showing GREEN
-bool          inAmberPhase  = false;
-unsigned long phaseStartMs  = 0;
-const int     AMBER_SEC     = 3;
 
 // ============================================================
-//  SECTION 6 — UTILITY FUNCTIONS
+//  SENSOR READING
 // ============================================================
 
-// ── Set all LEDs for one lane ─────────────────────────────────
-// signal: 0=RED, 1=AMBER, 2=GREEN
-void setSignal(int laneIdx, int signal) {
-  signalState[laneIdx] = signal;
-  digitalWrite(LED_PINS[laneIdx][0], signal == 0 ? HIGH : LOW);  // RED
-  digitalWrite(LED_PINS[laneIdx][1], signal == 1 ? HIGH : LOW);  // AMBER
-  digitalWrite(LED_PINS[laneIdx][2], signal == 2 ? HIGH : LOW);  // GREEN
-}
-
-// ── All lanes to RED ─────────────────────────────────────────
-void allRed() {
-  for (int i = 0; i < 4; i++) setSignal(i, 0);
-}
-
-// ── Moving average filter for sensor readings ─────────────────
-float movingAverage(LaneState &ls, float newReading) {
-  ls.distanceHistory[ls.historyIndex] = newReading;
-  ls.historyIndex = (ls.historyIndex + 1) % SENSOR_READINGS;
-  float sum = 0;
-  for (int i = 0; i < SENSOR_READINGS; i++) sum += ls.distanceHistory[i];
-  return sum / SENSOR_READINGS;
-}
-
-// ── Read one HC-SR04 sensor ───────────────────────────────────
-// Returns distance in cm, or -1.0 on timeout
-float readUltrasonic(int trigPin, int echoPin) {
-  // Release TRIG_A / RST_PIN conflict momentarily
-  // RFID RST is held HIGH in idle so we can safely pulse TRIG
+float readDistanceRaw(int trigPin, int echoPin)
+{
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  long duration = pulseIn(echoPin, HIGH, SENSOR_TIMEOUT_US);
-  if (duration == 0) return -1.0;  // Timeout
-  return (duration * SOUND_SPEED_CM_US) / 2.0;
+  long dur = pulseIn(echoPin, HIGH, PULSE_TIMEOUT);
+  if (dur == 0) return -1.0;
+
+  float cm = dur * 0.0343 / 2.0;
+  if (cm < MIN_VALID_CM || cm > MAX_VALID_CM) return -1.0;
+  return cm;
 }
 
-// ── Check if byte array matches an emergency tag ─────────────
-bool isEmergencyTag(byte *uid, byte uidSize) {
-  if (uidSize != TAG_SIZE) return false;
-  bool match1 = true, match2 = true;
-  for (int i = 0; i < TAG_SIZE; i++) {
-    if (uid[i] != EMERGENCY_TAG_1[i]) match1 = false;
-    if (uid[i] != EMERGENCY_TAG_2[i]) match2 = false;
+
+// Median rejects the single wild reading ultrasonic modules throw out
+// occasionally, without smearing it into later samples the way an
+// averaging filter would.
+float medianOf(Lane &L)
+{
+  float v[MEDIAN_WINDOW];
+  int n = 0;
+  for (int i = 0; i < L.rawFilled; i++) if (L.raw[i] > 0) v[n++] = L.raw[i];
+  if (n == 0) return -1.0;
+
+  for (int i = 1; i < n; i++) {
+    float k = v[i]; int j = i - 1;
+    while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
+    v[j+1] = k;
   }
-  return match1 || match2;
+  return v[n/2];
 }
 
-// ── Format UID bytes as hex string ───────────────────────────
-String uidToString(byte *uid, byte uidSize) {
-  String result = "";
-  for (byte i = 0; i < uidSize; i++) {
-    if (uid[i] < 0x10) result += "0";
-    result += String(uid[i], HEX);
-    if (i < uidSize - 1) result += ":";
-  }
-  result.toUpperCase();
-  return result;
-}
 
-// ============================================================
-//  SECTION 7 — Wi-Fi CONNECTION
-// ============================================================
+void sampleLane(int idx)
+{
+  Lane &L = lanes[idx];
 
-void connectWiFi() {
-  Serial.println("\nConnecting to hotspot: " + String(WIFI_SSID));
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  float raw = readDistanceRaw(TRIG_PIN[idx], ECHO_PIN[idx]);
+  L.raw[L.rawIdx] = raw;
+  L.rawIdx = (L.rawIdx + 1) % MEDIAN_WINDOW;
+  if (L.rawFilled < MEDIAN_WINDOW) L.rawFilled++;
 
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
+  L.distance = medianOf(L);
+  bool nowPresent = (L.distance > 0 && L.distance <= DETECTION_DISTANCE);
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWi-Fi connected!");
-    Serial.println("ESP32 IP: " + WiFi.localIP().toString());
+  L.occ[L.occIdx] = nowPresent;
+  L.occIdx = (L.occIdx + 1) % OCC_WINDOW;
+  if (L.occFilled < OCC_WINDOW) L.occFilled++;
+
+  bool onGreen = (strcmp(L.signal, "GREEN") == 0);
+
+  if (nowPresent) {
+    L.clearRun = 0;
+    L.clearSince = 0;
+
+    if (L.armed) {
+      L.count++;
+      L.armed = false;
+
+      // A detection event means a vehicle crossed the sensor. On red it
+      // has joined the back of the queue; on green it is discharging.
+      if (onGreen) { if (L.queue > 0) L.queue--; }
+      else         { if (L.queue < QUEUE_MAX) L.queue++; }
+    }
+
+    // Continuous presence on red means at least one vehicle is standing
+    // at the line, even if no fresh edge was seen.
+    if (!onGreen && L.queue < 1) L.queue = 1;
+
+    if (!L.present) L.presentSince = millis();
+
   } else {
-    Serial.println("\nWi-Fi FAILED. Check SSID/password. Restarting...");
-    delay(3000);
-    ESP.restart();
-  }
-}
+    L.clearRun++;
+    if (L.clearRun >= CLEAR_SAMPLES) L.armed = true;
 
-// ============================================================
-//  SECTION 8 — TCP CONNECTION
-// ============================================================
-
-void connectTCP() {
-  Serial.println("Connecting to server " + String(SERVER_IP) + ":" + String(SERVER_PORT));
-  int attempts = 0;
-  while (!tcpClient.connected() && attempts < 10) {
-    if (tcpClient.connect(SERVER_IP, SERVER_PORT)) {
-      Serial.println("TCP connected to Python server.");
-      return;
+    if (L.present && L.presentSince > 0) {
+      L.waitAccum += millis() - L.presentSince;
+      L.presentSince = 0;
     }
-    Serial.print(".");
-    delay(1000);
-    attempts++;
-  }
-  if (!tcpClient.connected()) {
-    Serial.println("TCP connection FAILED. Will retry next poll.");
-  }
-}
 
-// ============================================================
-//  SECTION 9 — SENSOR POLLING
-// ============================================================
-
-void pollSensors() {
-  for (int i = 0; i < 4; i++) {
-    LaneState &ls = lanes[i];
-    int trigPin = SENSOR_PINS[i][0];
-    int echoPin = SENSOR_PINS[i][1];
-
-    float dist = readUltrasonic(trigPin, echoPin);
-    if (dist < 0) dist = 400.0;  // Timeout = no vehicle
-
-    float avgDist = movingAverage(ls, dist);
-    ls.lastDistance = avgDist;
-
-    bool vehiclePresent = (avgDist < VEHICLE_THRESHOLD_CM);
-
-    if (vehiclePresent) {
-      ls.consecutiveDetections++;
-      ls.sensorActivation += (POLL_INTERVAL_MS / 1000.0);
-      ls.vehicleCount = min(ls.consecutiveDetections, 12);
-      ls.waitTime     = ls.consecutiveDetections * (POLL_INTERVAL_MS / 1000.0);
+    // Sustained clear on green means the queue has fully discharged.
+    if (onGreen) {
+      if (L.clearSince == 0) L.clearSince = millis();
+      else if (millis() - L.clearSince > QUEUE_FLUSH_MS) L.queue = 0;
     } else {
-      // Reset when lane clears
-      ls.consecutiveDetections = 0;
-      ls.vehicleCount          = 0;
-      ls.waitTime              = 0;
-      ls.sensorActivation      = 0;
+      L.clearSince = 0;
     }
+  }
+
+  L.present = nowPresent;
+}
+
+
+// Seconds the sensor was occupied within the window.
+//
+// The model was trained on activation ≈ vehicle_count x 0.3..0.9, so a
+// six-vehicle queue sits around 4-5 s. A raw occupied-seconds figure
+// saturates at the full window length once a queue stands on the sensor,
+// which falls outside that range. The measured value is therefore capped
+// against what the queue estimate implies, keeping the feature inside the
+// distribution the classifier actually saw.
+float activationOf(Lane &L)
+{
+  if (L.occFilled == 0) return 0.0;
+
+  int hits = 0;
+  for (int i = 0; i < L.occFilled; i++) if (L.occ[i]) hits++;
+  float measured = hits * SAMPLE_PERIOD_S;
+
+  float implied = L.queue * ACTIVATION_PER_VEHICLE;
+  return (measured < implied) ? measured : implied;
+}
+
+
+float waitSecondsOf(Lane &L)
+{
+  unsigned long w = L.waitAccum;
+  if (L.present && L.presentSince > 0) w += millis() - L.presentSince;
+  return w / 1000.0;
+}
+
+
+// Counts and wait reset each reporting window so the server sees a rate,
+// not an ever-growing total. The queue estimate deliberately persists —
+// it represents standing vehicles, not events in the last window.
+void resetWindow(Lane &L)
+{
+  L.count = 0;
+  L.waitAccum = 0;
+  L.presentSince = L.present ? millis() : 0;
+}
+
+
+// ============================================================
+//  LAMPS
+//
+//  The hardware has red and green only. A YELLOW instruction is shown
+//  as a flashing red — visually distinct from steady red, and it fails
+//  safe, since a driver reading it as "stop" is the correct response.
+// ============================================================
+
+void applySignal(int idx, const char* sig)
+{
+  bool isGreen  = (strcmp(sig, "GREEN")  == 0);
+  bool isYellow = (strcmp(sig, "YELLOW") == 0);
+
+  if (isGreen) {
+    digitalWrite(RED_PIN[idx], LOW);
+    digitalWrite(GREEN_PIN[idx], HIGH);
+  } else if (isYellow) {
+    digitalWrite(GREEN_PIN[idx], LOW);
+    digitalWrite(RED_PIN[idx], yellowBlinkOn ? HIGH : LOW);
+  } else {
+    digitalWrite(GREEN_PIN[idx], LOW);
+    digitalWrite(RED_PIN[idx], HIGH);
   }
 }
 
-// ============================================================
-//  SECTION 10 — RFID POLLING
-// ============================================================
 
-void pollRFID() {
-  // Skip if RFID not present or in cooldown
+void refreshLamps()
+{
   unsigned long now = millis();
-  if (now - lastEmergencyMs < EMERGENCY_COOLDOWN_MS && lastEmergencyMs > 0) return;
+  if (now - yellowBlinkAt >= 250) {
+    yellowBlinkAt = now;
+    yellowBlinkOn = !yellowBlinkOn;
+  }
+  for (int i = 0; i < NUM_LANES; i++) applySignal(i, lanes[i].signal);
+}
 
+
+void setAllRed()
+{
+  for (int i = 0; i < NUM_LANES; i++) strcpy(lanes[i].signal, "RED");
+}
+
+
+// ============================================================
+//  RFID
+// ============================================================
+
+void checkRFID()
+{
+#if ENABLE_RFID
   if (!rfid.PICC_IsNewCardPresent()) return;
   if (!rfid.PICC_ReadCardSerial())   return;
 
-  String uid    = uidToString(rfid.uid.uidByte, rfid.uid.size);
-  bool   isEmg  = isEmergencyTag(rfid.uid.uidByte, rfid.uid.size);
-
-  Serial.println("RFID tag detected: " + uid + (isEmg ? " [EMERGENCY]" : ""));
-
-  if (isEmg) {
-    emergencyActive   = true;
-    emergencyTagUID   = uid;
-    emergencyStartMs  = now;
-    lastEmergencyMs   = now;
-    Serial.println("EMERGENCY VEHICLE DETECTED — activating override.");
+  String uid = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (rfid.uid.uidByte[i] < 0x10) uid += "0";
+    uid += String(rfid.uid.uidByte[i], HEX);
   }
-
+  uid.toUpperCase();
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
+
+  lastTagId     = uid;
+  emergencyFlag = true;
+
+  // The server holds the cooldown and decides when it is safe to grant
+  // priority. This board only reports the tag.
+  Serial.print("[RFID] tag ");
+  Serial.println(uid);
+#endif
 }
 
+
 // ============================================================
-//  SECTION 11 — BUILD & SEND JSON PACKET
+//  SERVER LINK
 // ============================================================
 
-bool sendPacket() {
-  if (!tcpClient.connected()) {
-    connectTCP();
-    if (!tcpClient.connected()) return false;
-  }
+void ensureWifi()
+{
+  if (WiFi.status() == WL_CONNECTED) return;
+  static unsigned long lastTry = 0;
+  if (millis() - lastTry < 5000) return;
+  lastTry = millis();
+  Serial.println("[WIFI] connecting...");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+}
 
-  // Check if emergency hold has expired
-  if (emergencyActive && (millis() - emergencyStartMs >= EMERGENCY_HOLD_MS)) {
-    emergencyActive = false;
-    emergencyTagUID = "";
-    Serial.println("Emergency override expired. Resuming normal operation.");
-  }
 
-  // Build JSON
+void ensureServer()
+{
+  if (client.connected()) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (millis() - lastConnectTry < RECONNECT_BACKOFF) return;
+
+  lastConnectTry = millis();
+  Serial.printf("[TCP] connecting to %s:%d ...\n", SERVER_HOST, SERVER_PORT);
+
+  if (client.connect(SERVER_HOST, SERVER_PORT)) {
+    Serial.println("[TCP] connected");
+    rxBuffer = "";
+    lastReplyAt = millis();
+  }
+}
+
+
+void sendPacket()
+{
+  if (!client.connected()) return;
+
   StaticJsonDocument<512> doc;
-  doc["laneA_count"]      = lanes[0].vehicleCount;
-  doc["laneB_count"]      = lanes[1].vehicleCount;
-  doc["laneC_count"]      = lanes[2].vehicleCount;
-  doc["laneD_count"]      = lanes[3].vehicleCount;
-  doc["laneA_wait"]       = (int)lanes[0].waitTime;
-  doc["laneB_wait"]       = (int)lanes[1].waitTime;
-  doc["laneC_wait"]       = (int)lanes[2].waitTime;
-  doc["laneD_wait"]       = (int)lanes[3].waitTime;
-  doc["laneA_activation"] = lanes[0].sensorActivation;
-  doc["laneB_activation"] = lanes[1].sensorActivation;
-  doc["laneC_activation"] = lanes[2].sensorActivation;
-  doc["laneD_activation"] = lanes[3].sensorActivation;
-  doc["emergency"]        = emergencyActive ? emergencyTagUID : String("0");
-  doc["timestamp"]        = (unsigned long)(millis() / 1000);
+  doc["timestamp"] = (uint32_t)(millis() / 1000);
+  doc["source"]    = "device";
+  doc["emergency"] = emergencyFlag ? "1" : "0";
 
-  // Serialize and send (newline-terminated)
-  String payload;
-  serializeJson(doc, payload);
-  payload += "\n";
-
-  size_t written = tcpClient.print(payload);
-  if (written == 0) {
-    Serial.println("Send failed — TCP disconnected.");
-    tcpClient.stop();
-    return false;
+  for (int i = 0; i < NUM_LANES; i++) {
+    String base = String("lane") + LANE_ID[i];
+    doc[base + "_count"]      = lanes[i].queue;   // estimated vehicles in lane
+    doc[base + "_wait"]       = waitSecondsOf(lanes[i]);
+    doc[base + "_activation"] = activationOf(lanes[i]);
   }
 
-  Serial.print("Sent: A=" + String(lanes[0].vehicleCount) +
-               "v B=" + String(lanes[1].vehicleCount) +
-               "v C=" + String(lanes[2].vehicleCount) +
-               "v D=" + String(lanes[3].vehicleCount) +
-               "v Emg=" + (emergencyActive ? emergencyTagUID : "0"));
-  return true;
+  String out;
+  serializeJson(doc, out);
+  out += "\n";                       // server splits on newline
+  client.print(out);
+
+  // Flag is one-shot; the server queues the request from here.
+  emergencyFlag = false;
+
+  for (int i = 0; i < NUM_LANES; i++) resetWindow(lanes[i]);
 }
 
-// ============================================================
-//  SECTION 12 — RECEIVE & PARSE SERVER RESPONSE
-// ============================================================
 
-bool receiveResponse() {
-  unsigned long startMs = millis();
-  String responseStr = "";
+void readReplies()
+{
+  while (client.available()) {
+    char c = client.read();
+    if (c == '\n') {
+      String line = rxBuffer;
+      rxBuffer = "";
+      line.trim();
+      if (line.length() == 0) continue;
 
-  // Wait up to 3 seconds for response
-  while (millis() - startMs < 3000) {
-    if (tcpClient.available()) {
-      char c = tcpClient.read();
-      if (c == '\n') break;
-      responseStr += c;
-    }
-    delay(1);
-  }
+      StaticJsonDocument<640> resp;
+      if (deserializeJson(resp, line)) continue;
 
-  if (responseStr.length() == 0) {
-    Serial.println("No response from server.");
-    return false;
-  }
+      for (int i = 0; i < NUM_LANES; i++) {
+        String sigKey = String("lane") + LANE_ID[i] + "_signal";
+        String grnKey = String("lane") + LANE_ID[i] + "_green";
 
-  StaticJsonDocument<256> resp;
-  DeserializationError err = deserializeJson(resp, responseStr);
-  if (err) {
-    Serial.println("JSON parse error: " + String(err.c_str()));
-    return false;
-  }
+        const char* sig = resp[sigKey] | "RED";
+        strncpy(lanes[i].signal, sig, sizeof(lanes[i].signal) - 1);
+        lanes[i].signal[sizeof(lanes[i].signal) - 1] = '\0';
 
-  // Update green times — both lanes in a phase get the same value
-  greenTimeSec[0] = resp["laneA_green"] | 10;
-  greenTimeSec[1] = resp["laneB_green"] | 10;
-  greenTimeSec[2] = resp["laneC_green"] | 10;
-  greenTimeSec[3] = resp["laneD_green"] | 10;
-  bool emgActive  = resp["emergency_active"] | false;
+        lanes[i].greenRemaining = resp[grnKey] | 0;
+      }
 
-  // Sync phase from server to keep ESP32 and server aligned
-  int serverPhase = resp["active_phase"] | 0;
-  currentPhase = serverPhase;
+      lastReplyAt  = millis();
+      serverLinked = true;
 
-  Serial.println(" → Phase:" + String(currentPhase) +
-                 " A:" + String(greenTimeSec[0]) +
-                 "s B:" + String(greenTimeSec[1]) +
-                 "s C:" + String(greenTimeSec[2]) +
-                 "s D:" + String(greenTimeSec[3]) + "s" +
-                 (emgActive ? " [EMERGENCY]" : ""));
-  return true;
-}
-
-// ============================================================
-//  SECTION 13 — ADAPTIVE SIGNAL CYCLE (REALISTIC TWO-PHASE)
-//
-//  Phase 0: Lanes A + C (horizontal road) GREEN together
-//  Phase 1: Lanes B + D (vertical road)   GREEN together
-//
-//  Green duration = server-assigned time for the active phase
-//  (server picks the MAX congestion of the two active lanes).
-//  Amber = 3 seconds between every phase switch.
-//
-//  Emergency override: all RED except emergency lane → GREEN.
-// ============================================================
-
-void runSignalCycle() {
-  unsigned long now     = millis();
-  unsigned long elapsed = now - phaseStartMs;
-
-  // ── Emergency override ────────────────────────────────────
-  if (emergencyActive) {
-    // Lane A is the emergency lane (RC522 mounted there)
-    for (int i = 0; i < 4; i++) {
-      setSignal(i, i == 0 ? 2 : 0);  // Lane A GREEN, all others RED
-    }
-    return;
-  }
-
-  // ── Normal two-phase adaptive cycle ──────────────────────
-  if (!inAmberPhase) {
-    // ── GREEN phase ──────────────────────────────────────────
-    // Active phase lanes → GREEN, other lanes → RED
-    int lane1 = PHASE_LANES[currentPhase][0];
-    int lane2 = PHASE_LANES[currentPhase][1];
-    // Use the green time the server sent for the first active lane
-    // (both lanes in a phase always share the same green duration)
-    unsigned long greenMs = (unsigned long)greenTimeSec[lane1] * 1000;
-
-    for (int i = 0; i < 4; i++) {
-      if (i == lane1 || i == lane2) setSignal(i, 2);  // GREEN
-      else                           setSignal(i, 0);  // RED
-    }
-
-    if (elapsed >= greenMs) {
-      // Transition both active lanes to AMBER
-      setSignal(lane1, 1);
-      setSignal(lane2, 1);
-      inAmberPhase = true;
-      phaseStartMs = now;
-      Serial.println("Phase " + String(currentPhase) +
-                     " AMBER — switching in " + String(AMBER_SEC) + "s");
-    }
-
-  } else {
-    // ── AMBER phase ──────────────────────────────────────────
-    if (elapsed >= (unsigned long)AMBER_SEC * 1000) {
-      // Set current phase lanes RED
-      setSignal(PHASE_LANES[currentPhase][0], 0);
-      setSignal(PHASE_LANES[currentPhase][1], 0);
-
-      // Switch to next phase
-      currentPhase = (currentPhase + 1) % 2;
-      inAmberPhase = false;
-      phaseStartMs = now;
-
-      int nl1 = PHASE_LANES[currentPhase][0];
-      int nl2 = PHASE_LANES[currentPhase][1];
-      Serial.println("Phase " + String(currentPhase) +
-                     " → Lanes " + String((char)('A'+nl1)) +
-                     "+" + String((char)('A'+nl2)) +
-                     " GREEN for " + String(greenTimeSec[nl1]) + "s");
+      const char* ps = resp["phase_state"] | "";
+      Serial.printf("[SRV] %s  A:%s B:%s C:%s D:%s\n", ps,
+                    lanes[0].signal, lanes[1].signal,
+                    lanes[2].signal, lanes[3].signal);
+    } else {
+      if (rxBuffer.length() < 900) rxBuffer += c;
+      else rxBuffer = "";           // discard a malformed oversized line
     }
   }
 }
 
+
 // ============================================================
-//  SECTION 14 — SETUP
+//  LOCAL FALLBACK
+//
+//  Runs only when the server has gone quiet. Mirrors the server's own
+//  sequence so behaviour does not change shape when the link drops:
+//  NS green -> NS yellow -> all red -> EW green -> EW yellow -> all red.
+//  Green length comes from a local reading of count and wait, using the
+//  same thresholds the model was trained against.
 // ============================================================
 
-void setup() {
-  // ── Serial (must call end before RFID uses GPIO3 for MISO) ─
+int localClass(int idx)
+{
+  int c = lanes[idx].queue;
+  float w = waitSecondsOf(lanes[idx]);
+
+  int byCount = (c >= 6) ? 2 : (c >= 3) ? 1 : 0;
+  int byWait  = (w > 25) ? 2 : (w > 10) ? 1 : 0;
+  return byCount > byWait ? byCount : byWait;
+}
+
+
+unsigned long fallbackGreenFor(int laneA, int laneB)
+{
+  int lvl = localClass(laneA);
+  int o   = localClass(laneB);
+  if (o > lvl) lvl = o;
+
+  if (lvl >= 2) return FB_GREEN_HIGH;
+  if (lvl == 1) return FB_GREEN_MEDIUM;
+  return FB_GREEN_LOW;
+}
+
+
+void fbEnter(FbState s, unsigned long dur)
+{
+  fbState = s;
+  fbStateStart = millis();
+  fbStateDur = dur;
+
+  setAllRed();
+  switch (s) {
+    case FB_NS_GREEN:  strcpy(lanes[1].signal, "GREEN");  strcpy(lanes[3].signal, "GREEN");  break;
+    case FB_NS_YELLOW: strcpy(lanes[1].signal, "YELLOW"); strcpy(lanes[3].signal, "YELLOW"); break;
+    case FB_EW_GREEN:  strcpy(lanes[0].signal, "GREEN");  strcpy(lanes[2].signal, "GREEN");  break;
+    case FB_EW_YELLOW: strcpy(lanes[0].signal, "YELLOW"); strcpy(lanes[2].signal, "YELLOW"); break;
+    default: break;
+  }
+}
+
+
+void runFallback()
+{
+  if (millis() - fbStateStart < fbStateDur) return;
+
+  switch (fbState) {
+    case FB_NS_GREEN:  fbEnter(FB_NS_YELLOW, FB_YELLOW);  break;
+    case FB_NS_YELLOW: fbEnter(FB_NS_RED,    FB_ALL_RED); break;
+    case FB_NS_RED:    fbEnter(FB_EW_GREEN,  fallbackGreenFor(0, 2)); break;
+    case FB_EW_GREEN:  fbEnter(FB_EW_YELLOW, FB_YELLOW);  break;
+    case FB_EW_YELLOW: fbEnter(FB_EW_RED,    FB_ALL_RED); break;
+    case FB_EW_RED:    fbEnter(FB_NS_GREEN,  fallbackGreenFor(1, 3)); break;
+  }
+}
+
+
+// ============================================================
+//  TELEMETRY
+// ============================================================
+
+void printStatus()
+{
+  Serial.println("------------------------------------------------");
+  for (int i = 0; i < NUM_LANES; i++) {
+    Serial.printf("Lane %s  ", LANE_ID[i]);
+    if (lanes[i].distance < 0) Serial.print("  --   ");
+    else                        Serial.printf("%6.1fcm", lanes[i].distance);
+    Serial.printf("  q=%-2d  wait=%5.1fs  act=%5.1fs  %s\n",
+                  lanes[i].queue, waitSecondsOf(lanes[i]),
+                  activationOf(lanes[i]), lanes[i].signal);
+  }
+  Serial.printf("wifi=%s  server=%s\n",
+                WiFi.status() == WL_CONNECTED ? "ok" : "down",
+                serverLinked ? "linked" : "FALLBACK");
+}
+
+
+// ============================================================
+//  SETUP
+// ============================================================
+
+void setup()
+{
   Serial.begin(115200);
-  delay(500);
-  Serial.println("\n====================================");
-  Serial.println("  AI Traffic Control System");
-  Serial.println("  ESP32-WROOM-32 Firmware");
-  Serial.println("====================================");
+  delay(300);
 
-  // ── LED pins ──────────────────────────────────────────────
-  for (int i = 0; i < 4; i++) {
-    for (int j = 0; j < 3; j++) {
-      pinMode(LED_PINS[i][j], OUTPUT);
-      digitalWrite(LED_PINS[i][j], LOW);
-    }
-  }
-  Serial.println("LED pins initialised.");
+  for (int i = 0; i < NUM_LANES; i++) {
+    lanes[i] = Lane();
+    lanes[i].distance = -1;
+    lanes[i].armed = true;
+    lanes[i].clearRun = CLEAR_SAMPLES;
+    lanes[i].queue = 0;
+    lanes[i].clearSince = 0;
+    strcpy(lanes[i].signal, "RED");
 
-  // ── Sensor TRIG pins ──────────────────────────────────────
-  for (int i = 0; i < 4; i++) {
-    pinMode(SENSOR_PINS[i][0], OUTPUT);
-    digitalWrite(SENSOR_PINS[i][0], LOW);
-  }
-  // ECHO pins are input-only (34, 35, 36, 39) — no pinMode needed for input
-  // but we set them explicitly for clarity
-  pinMode(ECHO_A, INPUT);
-  pinMode(ECHO_B, INPUT);
-  pinMode(ECHO_C, INPUT);
-  pinMode(ECHO_D, INPUT);
-  Serial.println("Sensor pins initialised.");
+    pinMode(TRIG_PIN[i], OUTPUT);
+    pinMode(ECHO_PIN[i], INPUT);
+    digitalWrite(TRIG_PIN[i], LOW);
 
-  // ── Initialise lane states ────────────────────────────────
-  for (int i = 0; i < 4; i++) {
-    lanes[i] = {0, 0, 0, 0, 0, {}, 0};
-    for (int j = 0; j < SENSOR_READINGS; j++) lanes[i].distanceHistory[j] = 400.0;
+    pinMode(RED_PIN[i], OUTPUT);
+    pinMode(GREEN_PIN[i], OUTPUT);
+    digitalWrite(RED_PIN[i], HIGH);
+    digitalWrite(GREEN_PIN[i], LOW);
   }
 
-  // ── RFID ──────────────────────────────────────────────────
-  // End Serial before SPI uses GPIO3 (MISO / RX0)
-  Serial.end();
-  SPI.begin(RFID_SCK_PIN, RFID_MISO_PIN, RFID_MOSI_PIN, RFID_SS_PIN);
+#if ENABLE_RFID
+  SPI.begin();
   rfid.PCD_Init();
-  // Restart Serial after RFID init
-  Serial.begin(115200);
-  delay(100);
-  Serial.println("RC522 RFID initialised.");
+  Serial.println("[RFID] reader ready");
+#endif
 
-  // ── Wi-Fi ─────────────────────────────────────────────────
-  connectWiFi();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  // ── TCP ───────────────────────────────────────────────────
-  connectTCP();
+  Serial.println("\n================================================");
+  Serial.println("  AI TRAFFIC CONTROL — ESP32 NODE");
+  Serial.println("  Lane A West · B North · C East · D South");
+  Serial.println("================================================");
 
-  // ── Start signal cycle ────────────────────────────────────
-  allRed();
-  delay(1000);
-  phaseStartMs = millis();
-  // Phase 0: Lanes A(0) + C(2) start GREEN
-  setSignal(0, 2);
-  setSignal(2, 2);
-  Serial.println("Phase 0 started: Lanes A+C GREEN (horizontal road)");
-  Serial.println("====================================");
+  fbEnter(FB_NS_RED, FB_ALL_RED);
 }
 
+
 // ============================================================
-//  SECTION 15 — MAIN LOOP
+//  MAIN LOOP
+//
+//  One pulseIn per pass at most, so the loop never stalls long enough
+//  to miss a server reply or an RFID tag.
 // ============================================================
 
-void loop() {
+void loop()
+{
   unsigned long now = millis();
 
-  // ── 1. Run signal cycle (non-blocking, every loop iteration) ─
-  runSignalCycle();
-
-  // ── 2. Poll sensors + RFID + send/receive every 2 seconds ───
-  if (now - lastPollMs >= POLL_INTERVAL_MS) {
-    lastPollMs = now;
-
-    // Poll sensors
-    pollSensors();
-
-    // Poll RFID
-    pollRFID();
-
-    // Send packet to server
-    if (sendPacket()) {
-      // Receive and apply timing instructions
-      receiveResponse();
-    }
+  if (now - lastSampleAt >= SAMPLE_INTERVAL) {
+    lastSampleAt = now;
+    sampleLane(activeLane);
+    activeLane = (activeLane + 1) % NUM_LANES;
   }
 
-  // ── 3. Reconnect Wi-Fi if dropped ────────────────────────────
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wi-Fi lost — reconnecting...");
-    connectWiFi();
-    connectTCP();
+  checkRFID();
+
+  ensureWifi();
+  ensureServer();
+  readReplies();
+
+  if (now - lastSendAt >= SEND_INTERVAL) {
+    lastSendAt = now;
+    if (client.connected()) sendPacket();
+    printStatus();
   }
 
-  delay(10);  // Small yield to prevent watchdog reset
+  // Link considered down if no reply has arrived recently.
+  if (serverLinked && (now - lastReplyAt > LINK_TIMEOUT)) {
+    serverLinked = false;
+    Serial.println("[TCP] link lost — switching to local fallback");
+    fbEnter(FB_NS_RED, FB_ALL_RED);
+  }
+
+  if (!serverLinked) runFallback();
+
+  refreshLamps();
 }
+
+
+// ============================================================
+//  NOTES
+//
+//  1. Before flashing
+//     Set WIFI_SSID, WIFI_PASSWORD and SERVER_HOST. SERVER_HOST is the
+//     laptop running run.py — get it from `ipconfig` (IPv4 address).
+//     Port 5050 matches server.py; do not change one without the other.
+//
+//  2. Check which sensor is on which approach
+//     The code assumes sensor order A=West, B=North, C=East, D=South,
+//     matching the server's PHASE_LANES pairing of A+C and B+D. If your
+//     sensors are physically ordered differently, reorder TRIG_PIN and
+//     ECHO_PIN rather than changing the lane letters — the server pairs
+//     lanes by letter and pairing perpendicular approaches would give
+//     two conflicting movements green at once.
+//
+//  3. Yellow on red/green hardware
+//     A YELLOW instruction flashes the red lamp. Add real amber LEDs and
+//     this becomes a one-line change in applySignal().
+//
+//  4. Enabling RFID
+//     RC522 needs GPIO 5, 18, 19, 22, 23 — currently LED pins. Free them
+//     by moving these five, then set ENABLE_RFID to 1:
+//       ECHO_C 32 -> 36 (VP)     ECHO_D 33 -> 39 (VN)
+//       GREEN_A 5 -> 16          RED_B  23 -> 17
+//       GREEN_B 22 -> 32         RED_C  18 -> 33
+//       GREEN_C 19 -> 2
+//     VP and VN are input-only, so moving the echoes there frees two
+//     output-capable pins.
+//
+//  5. Do not use the pin table in hardware/pin_assignment.md
+//     It assigns TRIG lines to GPIO 0, 2, 12 and 15, and RFID MOSI/MISO
+//     to GPIO 0 and 3. Those are strapping pins and the USB serial pair.
+//     That table predates the working build.
+// ============================================================
